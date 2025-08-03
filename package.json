@@ -1,0 +1,22 @@
+{
+  "name": "whatsapp-pedagogico",
+  "version": "1.0.0",
+  "description": "Servidor Node.js para envio automático de relatórios pedagógicos via WhatsApp",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": "18.x"
+  },
+  "author": "Systematrix",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "firebase-admin": "^11.11.1",
+    "qrcode-terminal": "^0.12.0",
+    "socket.io": "^4.7.2",
+    "whatsapp-web.js": "^1.23.0"
+  }
+}
