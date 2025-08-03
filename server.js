@@ -1,69 +1,94 @@
 const express = require('express');
-const { Server } = require('socket.io');
 const http = require('http');
+const { Server } = require('socket.io');
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const admin = require('firebase-admin');
+const QRCode = require('qrcode');
+const cors = require('cors');
 const path = require('path');
 
-// Inicializar Firebase Admin
-const serviceAccount = require('./credenciais-firebase.json'); // JSON do projeto Firebase
+// =============== CONFIGURAÇÃO DO FIREBASE ADMIN ===============
+const serviceAccount = require('./pedagogia-systematrix-firebase-adminsdk-fbsvc-c6c428fcb2.json'); // <-- coloque seu JSON aqui
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   databaseURL: 'https://pedagogia-systematrix.firebaseio.com'
 });
+
 const db = admin.database();
 
-// Inicializar WhatsApp
+// =============== CONFIGURAÇÃO DO SERVIDOR EXPRESS + SOCKET.IO ===============
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // ou coloque seu domínio como: "https://systematrix.com.br"
+    methods: ["GET", "POST"]
+  }
+});
+
+app.use(cors());
+app.use(express.json());
+
+// =============== WHATSAPP-WEB.JS CLIENT ===============
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: { headless: true }
 });
 
-client.on('qr', (qr) => {
-  qrcode.generate(qr, { small: true });
-  console.log('Escaneie o QR Code acima com o WhatsApp');
+// Emitir QR code para os clientes conectados
+client.on('qr', async (qr) => {
+  try {
+    const qrCodeDataURL = await QRCode.toDataURL(qr);
+    io.emit('qr', qrCodeDataURL);
+    console.log('📲 Novo QR code emitido para conexão.');
+  } catch (err) {
+    console.error('Erro ao gerar QR Code:', err);
+  }
 });
 
+// Emitir status de conexão
 client.on('ready', () => {
-  console.log('✅ Cliente do WhatsApp está pronto!');
+  console.log('✅ WhatsApp está conectado.');
+  io.emit('ready');
 });
 
-// Iniciar cliente do WhatsApp
+client.on('auth_failure', () => {
+  console.log('❌ Falha de autenticação. Reconectando...');
+  io.emit('auth_failure');
+});
+
+client.on('disconnected', () => {
+  console.log('🔌 WhatsApp desconectado.');
+  io.emit('disconnected');
+});
+
+// Iniciar WhatsApp
 client.initialize();
 
-// Configurar servidor
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
+// =============== SOCKET.IO CONEXÃO COM FRONT-END ===============
+io.on('connection', (socket) => {
+  console.log('🟢 Cliente conectado ao socket:', socket.id);
+});
 
-// Escutar atualizações do Firebase
-function escutarEEnviar(tipo) {
-  const ref = db.ref(`/escolas`);
-  ref.on('child_added', (escolaSnap) => {
-    const escolaId = escolaSnap.key;
-    const refTipo = db.ref(`/escolas/${escolaId}/relatorios/${tipo}`);
+// =============== ENDPOINT DE ENVIO MANUAL DE MENSAGEM ===============
+app.post('/enviar-whatsapp', async (req, res) => {
+  const { numero, mensagem } = req.body;
 
-    refTipo.on('child_added', async (snap) => {
-      const dado = snap.val();
-      const texto = `📌 Nova ${tipo.toUpperCase()}:\nAluno: ${dado.alunoNome}\nTurma: ${dado.turmaNome}\n${dado.descricao ? `Descrição: ${dado.descricao}\n` : ''}Data: ${dado.data}`;
+  if (!numero || !mensagem) {
+    return res.status(400).json({ erro: 'Número e mensagem são obrigatórios.' });
+  }
 
-      // Buscar telefone do responsável (aqui simplificado)
-      const responsavelSnap = await db.ref(`/escolas/${escolaId}/responsaveis/${dado.alunoId}`).once('value');
-      const telefone = responsavelSnap.val()?.telefone || null;
-      if (telefone) {
-        client.sendMessage(`${telefone}@c.us`, texto);
-      } else {
-        console.warn('Telefone não encontrado para:', dado.alunoNome);
-      }
-    });
-  });
-}
+  try {
+    await client.sendMessage(`${numero}@c.us`, mensagem);
+    return res.json({ sucesso: true, enviado: true });
+  } catch (erro) {
+    console.error('Erro ao enviar mensagem:', erro);
+    return res.status(500).json({ sucesso: false, erro: erro.message });
+  }
+});
 
-// Escutar para cada tipo
-['ocorrencias', 'faltas', 'observacoes'].forEach(escutarEEnviar);
-
-// Iniciar servidor
+// =============== INICIAR SERVIDOR ===============
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Servidor rodando em http://localhost:${PORT}`);
