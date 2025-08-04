@@ -1,10 +1,11 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, LegacySessionAuth } = require('whatsapp-web.js');
 const admin = require('firebase-admin');
 const QRCode = require('qrcode');
 const cors = require('cors');
+const fs = require('fs');
 const path = require('path');
 
 const serviceAccount = require('./pedagogia-systematrix-firebase-adminsdk-fbsvc-c6c428fcb2.json');
@@ -27,12 +28,43 @@ app.use(express.json());
 const whatsappInstances = new Map(); // schoolId => { client, isReady }
 const socketToSchool = new Map();    // socket.id => schoolId
 
-// ========== Função para iniciar uma instância de WhatsApp ==========
-function startWhatsAppInstance(schoolId) {
+// ===================== UTILIDADES =====================
+function encodeSessionData(data) {
+  const encoded = {};
+  for (const key in data) {
+    encoded[key] = Buffer.from(JSON.stringify(data[key])).toString('base64');
+  }
+  return encoded;
+}
+
+function decodeSessionData(data) {
+  const decoded = {};
+  for (const key in data) {
+    decoded[key] = JSON.parse(Buffer.from(data[key], 'base64').toString());
+  }
+  return decoded;
+}
+
+async function loadSession(schoolId) {
+  const snap = await db.ref(`whatsapp_sessions/${schoolId}`).once('value');
+  return snap.exists() ? decodeSessionData(snap.val()) : null;
+}
+
+async function saveSession(schoolId, session) {
+  const encoded = encodeSessionData(session);
+  await db.ref(`whatsapp_sessions/${schoolId}`).set(encoded);
+}
+
+// ===================== INSTÂNCIA WHATSAPP =====================
+async function startWhatsAppInstance(schoolId) {
   if (whatsappInstances.has(schoolId)) return;
 
+  const savedSession = await loadSession(schoolId);
+
   const client = new Client({
-    authStrategy: new LocalAuth({ clientId: schoolId }),
+    authStrategy: new LegacySessionAuth({
+      session: savedSession || undefined
+    }),
     puppeteer: { headless: true }
   });
 
@@ -51,6 +83,11 @@ function startWhatsAppInstance(schoolId) {
     console.log(`✅ [${schoolId}] WhatsApp conectado`);
   });
 
+  client.on('authenticated', (session) => {
+    console.log(`🔐 [${schoolId}] Autenticado, salvando sessão`);
+    saveSession(schoolId, session);
+  });
+
   client.on('auth_failure', () => {
     whatsappInstances.get(schoolId).isReady = false;
     emitToSchool(schoolId, 'auth_failure');
@@ -60,13 +97,12 @@ function startWhatsAppInstance(schoolId) {
   client.on('disconnected', () => {
     whatsappInstances.get(schoolId).isReady = false;
     emitToSchool(schoolId, 'disconnected');
-    console.warn(`🔌 [${schoolId}] WhatsApp desconectado`);
+    console.warn(`🔌 [${schoolId}] Desconectado`);
   });
 
   client.initialize();
 }
 
-// ========== Emitir evento apenas para sockets daquela escola ==========
 function emitToSchool(schoolId, event, data) {
   for (const [socketId, id] of socketToSchool.entries()) {
     if (id === schoolId) {
@@ -75,17 +111,14 @@ function emitToSchool(schoolId, event, data) {
   }
 }
 
-// ========== SOCKET.IO ==========
+// ===================== SOCKET.IO =====================
 io.on('connection', (socket) => {
-  console.log('🟢 Novo socket conectado:', socket.id);
+  console.log('🟢 Socket conectado:', socket.id);
 
-  socket.on('join-school', (schoolId) => {
+  socket.on('join-school', async (schoolId) => {
     socketToSchool.set(socket.id, schoolId);
     console.log(`🔗 Socket ${socket.id} associado à escola ${schoolId}`);
-
-    if (!whatsappInstances.has(schoolId)) {
-      startWhatsAppInstance(schoolId);
-    }
+    await startWhatsAppInstance(schoolId);
 
     const instance = whatsappInstances.get(schoolId);
     if (instance?.isReady) {
@@ -101,7 +134,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// ========== ENDPOINT ENVIO DE MENSAGEM ==========
+// ===================== ENVIO DE MENSAGENS =====================
 app.post('/enviar-whatsapp', async (req, res) => {
   const { numero, mensagem, schoolId } = req.body;
 
@@ -119,16 +152,13 @@ app.post('/enviar-whatsapp', async (req, res) => {
     console.log(`📤 [${schoolId}] Mensagem enviada para ${numero}`);
     return res.json({ sucesso: true });
   } catch (err) {
-    console.error(`Erro ao enviar mensagem para ${numero}:`, err);
+    console.error(`Erro ao enviar para ${numero}:`, err);
     return res.status(500).json({ erro: err.message });
   }
 });
 
-app.get('/', (req, res) => {
-  res.send('Servidor WhatsApp Multi-Instância Systematrix v4.0');
-});
-
+// ===================== INÍCIO DO SERVIDOR =====================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Servidor ativo em http://localhost:${PORT}`);
+  console.log(`🚀 Servidor WhatsApp Multi-Instância rodando em http://localhost:${PORT}`);
 });
