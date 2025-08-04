@@ -7,8 +7,7 @@ const QRCode = require('qrcode');
 const cors = require('cors');
 const path = require('path');
 
-// =============== CONFIGURAÇÃO DO FIREBASE ADMIN ===============
-const serviceAccount = require('./pedagogia-systematrix-firebase-adminsdk-fbsvc-c6c428fcb2.json'); // <-- coloque seu JSON aqui
+const serviceAccount = require('./pedagogia-systematrix-firebase-adminsdk-fbsvc-c6c428fcb2.json');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -16,80 +15,120 @@ admin.initializeApp({
 });
 
 const db = admin.database();
-
-// =============== CONFIGURAÇÃO DO SERVIDOR EXPRESS + SOCKET.IO ===============
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: "*", // ou coloque seu domínio como: "https://systematrix.com.br"
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: '*', methods: ['GET', 'POST'] }
 });
 
 app.use(cors());
 app.use(express.json());
 
-// =============== WHATSAPP-WEB.JS CLIENT ===============
-const client = new Client({
-  authStrategy: new LocalAuth(),
-  puppeteer: { headless: true }
-});
+const whatsappInstances = new Map(); // schoolId => { client, isReady }
+const socketToSchool = new Map();    // socket.id => schoolId
 
-// Emitir QR code para os clientes conectados
-client.on('qr', async (qr) => {
-  try {
-    const qrCodeDataURL = await QRCode.toDataURL(qr);
-    io.emit('qr', qrCodeDataURL);
-    console.log('📲 Novo QR code emitido para conexão.');
-  } catch (err) {
-    console.error('Erro ao gerar QR Code:', err);
+// ========== Função para iniciar uma instância de WhatsApp ==========
+function startWhatsAppInstance(schoolId) {
+  if (whatsappInstances.has(schoolId)) return;
+
+  const client = new Client({
+    authStrategy: new LocalAuth({ clientId: schoolId }),
+    puppeteer: { headless: true }
+  });
+
+  whatsappInstances.set(schoolId, { client, isReady: false });
+
+  client.on('qr', async (qr) => {
+    const qrDataURL = await QRCode.toDataURL(qr);
+    emitToSchool(schoolId, 'qr', qrDataURL);
+    whatsappInstances.get(schoolId).isReady = false;
+    console.log(`📲 [${schoolId}] QR code gerado`);
+  });
+
+  client.on('ready', () => {
+    whatsappInstances.get(schoolId).isReady = true;
+    emitToSchool(schoolId, 'ready');
+    console.log(`✅ [${schoolId}] WhatsApp conectado`);
+  });
+
+  client.on('auth_failure', () => {
+    whatsappInstances.get(schoolId).isReady = false;
+    emitToSchool(schoolId, 'auth_failure');
+    console.error(`❌ [${schoolId}] Falha de autenticação`);
+  });
+
+  client.on('disconnected', () => {
+    whatsappInstances.get(schoolId).isReady = false;
+    emitToSchool(schoolId, 'disconnected');
+    console.warn(`🔌 [${schoolId}] WhatsApp desconectado`);
+  });
+
+  client.initialize();
+}
+
+// ========== Emitir evento apenas para sockets daquela escola ==========
+function emitToSchool(schoolId, event, data) {
+  for (const [socketId, id] of socketToSchool.entries()) {
+    if (id === schoolId) {
+      io.to(socketId).emit(event, data);
+    }
   }
-});
+}
 
-// Emitir status de conexão
-client.on('ready', () => {
-  console.log('✅ WhatsApp está conectado.');
-  io.emit('ready');
-});
-
-client.on('auth_failure', () => {
-  console.log('❌ Falha de autenticação. Reconectando...');
-  io.emit('auth_failure');
-});
-
-client.on('disconnected', () => {
-  console.log('🔌 WhatsApp desconectado.');
-  io.emit('disconnected');
-});
-
-// Iniciar WhatsApp
-client.initialize();
-
-// =============== SOCKET.IO CONEXÃO COM FRONT-END ===============
+// ========== SOCKET.IO ==========
 io.on('connection', (socket) => {
-  console.log('🟢 Cliente conectado ao socket:', socket.id);
+  console.log('🟢 Novo socket conectado:', socket.id);
+
+  socket.on('join-school', (schoolId) => {
+    socketToSchool.set(socket.id, schoolId);
+    console.log(`🔗 Socket ${socket.id} associado à escola ${schoolId}`);
+
+    if (!whatsappInstances.has(schoolId)) {
+      startWhatsAppInstance(schoolId);
+    }
+
+    const instance = whatsappInstances.get(schoolId);
+    if (instance?.isReady) {
+      socket.emit('ready');
+    } else {
+      socket.emit('waiting');
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('🔴 Socket desconectado:', socket.id);
+    socketToSchool.delete(socket.id);
+  });
 });
 
-// =============== ENDPOINT DE ENVIO MANUAL DE MENSAGEM ===============
+// ========== ENDPOINT ENVIO DE MENSAGEM ==========
 app.post('/enviar-whatsapp', async (req, res) => {
-  const { numero, mensagem } = req.body;
+  const { numero, mensagem, schoolId } = req.body;
 
-  if (!numero || !mensagem) {
-    return res.status(400).json({ erro: 'Número e mensagem são obrigatórios.' });
+  if (!numero || !mensagem || !schoolId) {
+    return res.status(400).json({ erro: 'Número, mensagem e schoolId são obrigatórios.' });
+  }
+
+  const instance = whatsappInstances.get(schoolId);
+  if (!instance || !instance.isReady) {
+    return res.status(400).json({ erro: 'Instância do WhatsApp não está pronta.' });
   }
 
   try {
-    await client.sendMessage(`${numero}@c.us`, mensagem);
-    return res.json({ sucesso: true, enviado: true });
-  } catch (erro) {
-    console.error('Erro ao enviar mensagem:', erro);
-    return res.status(500).json({ sucesso: false, erro: erro.message });
+    await instance.client.sendMessage(`${numero}@c.us`, mensagem);
+    console.log(`📤 [${schoolId}] Mensagem enviada para ${numero}`);
+    return res.json({ sucesso: true });
+  } catch (err) {
+    console.error(`Erro ao enviar mensagem para ${numero}:`, err);
+    return res.status(500).json({ erro: err.message });
   }
 });
 
-// =============== INICIAR SERVIDOR ===============
+app.get('/', (req, res) => {
+  res.send('Servidor WhatsApp Multi-Instância Systematrix v4.0');
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando em http://localhost:${PORT}`);
+  console.log(`🚀 Servidor ativo em http://localhost:${PORT}`);
 });
