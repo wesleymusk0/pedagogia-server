@@ -8,10 +8,8 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 
-const serviceAccount = require('./pedagogia-systematrix-firebase-adminsdk-fbsvc-c6c428fcb2.json');
-
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.applicationDefault(),
   databaseURL: 'https://pedagogia-systematrix.firebaseio.com'
 });
 
