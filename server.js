@@ -10,7 +10,7 @@ const cors = require('cors');
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON); // RECOMENDADO: usar variável de ambiente
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://SEU-PROJETO.firebaseio.com" // Altere aqui
+  databaseURL: "https://pedagogia-systematrix.firebaseio.com" // Altere aqui
 });
 const db = admin.database();
 
