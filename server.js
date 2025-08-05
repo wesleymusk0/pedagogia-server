@@ -6,7 +6,8 @@ const admin = require('firebase-admin');
 const QRCode = require('qrcode');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs-extra');
+const axios = require('axios');
 
 // =============== CONFIG FIREBASE ADMIN ===============
 const serviceAccount = require('./pedagogia-systematrix-firebase-adminsdk-fbsvc-c6c428fcb2.json');
