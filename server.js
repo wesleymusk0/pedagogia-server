@@ -68,6 +68,11 @@ async function restoreSessionFromFirebase(sessionName) {
   }
 }
 
+async function listarSessoesSalvasNoFirebase() {
+  const snapshot = await db.ref('sessions').once('value');
+  return snapshot.exists() ? Object.keys(snapshot.val()) : [];
+}
+
 async function startSession(sessionName, res) {
   if (activeClients[sessionName]) {
     if (!res.headersSent) res.send({ status: 'Já conectado' });
@@ -108,9 +113,15 @@ async function startSession(sessionName, res) {
   });
 
   client.on('disconnected', reason => {
-    console.log(`❌ Sessão ${sessionName} desconectada: ${reason}`);
-    delete activeClients[sessionName];
-  });
+      console.log(`❌ Sessão ${sessionName} desconectada: ${reason}`);
+      delete activeClients[sessionName];
+    
+      const sessionPath = getSessionPath(sessionName);
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        console.log(`🗑 Sessão ${sessionName}: pasta local removida.`);
+      }
+    });
 
   client.initialize();
   activeClients[sessionName] = client;
@@ -150,6 +161,17 @@ app.post('/enviar-whatsapp', async (req, res) => {
   }
 });
 
+(async () => {
+  const sessoes = await listarSessoesSalvasNoFirebase();
+  for (const sessionName of sessoes) {
+    console.log(`🔁 Restaurando sessão ${sessionName} do Firebase...`);
+    try {
+      await startSession(sessionName, { send: () => {}, headersSent: true }); // Ignora resposta HTTP
+    } catch (err) {
+      console.error(`Erro ao restaurar sessão ${sessionName}:`, err);
+    }
+  }
+})();
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
