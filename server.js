@@ -37,6 +37,7 @@ const activeSockets = new Map(); // Map<deviceId, socketId>
 async function saveSessionToFirebase(schoolId) {
     try {
         const sessionPath = path.join(__dirname, 'sessions', `${schoolId}.json`);
+        console.log('Verificando existência da pasta...');
         if (fs.existsSync(sessionPath)) {
             const sessionData = await fs.readFile(sessionPath, 'utf8');
             console.log(`[📁] Salvando sessão de ${schoolId}...`);
