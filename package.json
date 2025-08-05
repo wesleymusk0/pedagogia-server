@@ -6,26 +6,17 @@
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [
-    "whatsapp-web.js",
-    "firebase",
-    "socket.io",
-    "remoteauth",
-    "systematrix",
-    "nodejs"
-  ],
   "author": "Wesley - Systematrix",
   "license": "MIT",
   "dependencies": {
-    "@wppconnect-team/remote-auth": "^1.0.9",
     "axios": "^1.6.8",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "firebase-admin": "^11.11.1",
     "fs-extra": "^11.2.0",
-    "http": "^0.0.1-security",
     "qrcode": "^1.5.1",
     "socket.io": "^4.7.2",
-    "whatsapp-web.js": "^1.23.0"
+    "whatsapp-web.js": "^1.31.0",
+    "wwebjs-firebase-storage": "^1.0.3"
   }
 }
