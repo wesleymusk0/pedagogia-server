@@ -2,154 +2,141 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const admin = require('firebase-admin');
 const QRCode = require('qrcode');
 const cors = require('cors');
-const admin = require('firebase-admin');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
-// 🔐 Firebase Admin Init
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON);
+// 🔐 Inicializa Firebase com credenciais do ambiente
+const firebaseConfig = JSON.parse(process.env.FIREBASE_KEY_JSON);
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+    credential: admin.credential.cert(firebaseConfig),
+    databaseURL: firebaseConfig.database_url,
 });
-const bucket = admin.storage().bucket();
 
-// 🌐 Express Setup
+const db = admin.database();
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
+
 app.use(cors());
 app.use(express.json());
 
-// 📁 Sessões em memória
-const sessions = {};
+const SESSIONS_PATH = path.join(__dirname, 'sessions');
+if (!fs.existsSync(SESSIONS_PATH)) fs.mkdirSync(SESSIONS_PATH);
 
-// ⬇️ Baixar arquivos da sessão do Firebase
-async function restaurarSessao(sessionId) {
-  const files = [
-    `whatsapp-sessions/${sessionId}/Default/session-0.json`,
-    `whatsapp-sessions/${sessionId}/Default/session-1.json`,
-    `whatsapp-sessions/${sessionId}/DevToolsActivePort`,
-  ];
+// 📦 Restaura sessões salvas no Firebase para o disco
+async function restaurarSessoesDoFirebase() {
+    const snapshot = await db.ref('whatsapp-sessoes').once('value');
+    const todas = snapshot.val();
+    if (!todas) return;
 
-  for (const filePath of files) {
-    const localPath = path.join(os.homedir(), `.wwebjs_auth`, sessionId, filePath.split('/').slice(2).join('/'));
-    const fileDir = path.dirname(localPath);
-    fs.mkdirSync(fileDir, { recursive: true });
+    for (const sessionId in todas) {
+        const arquivos = todas[sessionId];
+        const pasta = path.join(SESSIONS_PATH, sessionId);
+        if (!fs.existsSync(pasta)) fs.mkdirSync(pasta, { recursive: true });
 
-    const remoteFile = bucket.file(filePath);
-    const exists = (await remoteFile.exists())[0];
+        for (const nomeArquivo in arquivos) {
+            const conteudo = arquivos[nomeArquivo];
+            fs.writeFileSync(path.join(pasta, nomeArquivo), conteudo, 'utf8');
+        }
 
-    if (exists) {
-      await remoteFile.download({ destination: localPath });
-      console.log(`📥 ${filePath} restaurado para ${localPath}`);
-    } else {
-      console.log(`⚠️ ${filePath} não encontrado no Firebase`);
+        console.log(`📁 Sessão ${sessionId} restaurada`);
+        iniciarCliente(sessionId); // Já inicia cliente após restaurar
     }
-  }
 }
 
-// ⬆️ Enviar arquivos da sessão para o Firebase
-async function salvarSessao(sessionId) {
-  const basePath = path.join(os.homedir(), `.wwebjs_auth`, sessionId);
-  const files = [
-    `Default/session-0.json`,
-    `Default/session-1.json`,
-    `DevToolsActivePort`,
-  ];
+// 💾 Salva sessão no Firebase Database
+async function salvarSessaoNoFirebase(sessionId) {
+    const pasta = path.join(SESSIONS_PATH, sessionId);
+    if (!fs.existsSync(pasta)) return;
 
-  for (const fileRelPath of files) {
-    const localPath = path.join(basePath, fileRelPath);
-    if (fs.existsSync(localPath)) {
-      const remotePath = `whatsapp-sessions/${sessionId}/${fileRelPath}`;
-      await bucket.upload(localPath, { destination: remotePath });
-      console.log(`📁 Sessão ${sessionId}: arquivo ${fileRelPath} salvo no Firebase.`);
-    } else {
-      console.log(`❌ Sessão ${sessionId}: arquivo ${fileRelPath} não encontrado localmente.`);
+    const arquivos = fs.readdirSync(pasta);
+    const dados = {};
+
+    for (const arquivo of arquivos) {
+        const conteudo = fs.readFileSync(path.join(pasta, arquivo), 'utf8');
+        dados[arquivo] = conteudo;
     }
-  }
 
-  console.log(`✅ Sessão ${sessionId} salva no Firebase.`);
+    await db.ref(`whatsapp-sessoes/${sessionId}`).set(dados);
+    console.log(`✅ Sessão ${sessionId} salva no Firebase.`);
 }
 
-// 🚀 Inicializar nova sessão
-async function iniciarSessao(sessionId, socket) {
-  await restaurarSessao(sessionId);
+// 🧠 Lista de instâncias de clientes WhatsApp
+const clientes = {};
 
-  const client = new Client({
-    authStrategy: new LocalAuth({ clientId: sessionId }),
-    puppeteer: { headless: true, args: ['--no-sandbox'] },
-  });
+// 🚀 Inicia cliente WhatsApp
+function iniciarCliente(sessionId) {
+    const client = new Client({
+        authStrategy: new LocalAuth({ clientId: sessionId, dataPath: SESSIONS_PATH }),
+        puppeteer: {
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            headless: true,
+        }
+    });
 
-  sessions[sessionId] = client;
+    client.on('qr', async qr => {
+        const qrCode = await QRCode.toDataURL(qr);
+        io.to(sessionId).emit('qr', qrCode);
+        console.log(`📱 QR gerado para sessão ${sessionId}`);
+    });
 
-  client.on('qr', async qr => {
-    const qrDataUrl = await QRCode.toDataURL(qr);
-    socket.emit('qr', { sessionId, qr: qrDataUrl });
-    console.log(`📲 QR Code gerado para sessão ${sessionId}`);
-  });
+    client.on('ready', async () => {
+        console.log(`✅ Sessão ${sessionId} pronta`);
+        await salvarSessaoNoFirebase(sessionId);
+        io.to(sessionId).emit('ready');
+    });
 
-  client.on('authenticated', () => {
-    console.log(`🔐 Sessão ${sessionId} autenticada`);
-  });
+    client.on('authenticated', () => {
+        console.log(`🔐 Sessão ${sessionId} autenticada`);
+    });
 
-  client.on('ready', async () => {
-    console.log(`✅ Sessão ${sessionId} pronta`);
-    await salvarSessao(sessionId);
-  });
+    client.on('disconnected', async () => {
+        console.log(`⚠️ Sessão ${sessionId} desconectada`);
+        await db.ref(`whatsapp-sessoes/${sessionId}`).remove();
+        delete clientes[sessionId];
+        io.to(sessionId).emit('disconnected');
+    });
 
-  client.on('disconnected', reason => {
-    console.log(`⚠️ Sessão ${sessionId} desconectada: ${reason}`);
-    client.destroy();
-    delete sessions[sessionId];
-  });
-
-  await client.initialize();
+    client.initialize();
+    clientes[sessionId] = client;
 }
 
-// 🔌 WebSocket: iniciar sessão
+// 📲 Socket.io para comunicação com o frontend
 io.on('connection', socket => {
-  console.log('📡 Cliente conectado');
+    console.log('🔗 Socket conectado');
 
-  socket.on('iniciar-sessao', async sessionId => {
-    if (sessions[sessionId]) {
-      console.log(`ℹ️ Sessão ${sessionId} já está ativa.`);
-      return;
-    }
-    try {
-      await iniciarSessao(sessionId, socket);
-    } catch (err) {
-      console.error(`❌ Erro ao iniciar sessão ${sessionId}:`, err);
-    }
-  });
+    socket.on('iniciar-sessao', async sessionId => {
+        socket.join(sessionId);
+        if (!clientes[sessionId]) {
+            iniciarCliente(sessionId);
+        } else {
+            socket.emit('ready');
+        }
+    });
 });
 
-// 📤 Enviar mensagem
+// 📤 Rota para enviar mensagem
 app.post('/enviar-whatsapp', async (req, res) => {
-  const { numero, mensagem, sessionId } = req.body;
-  if (!numero || !mensagem || !sessionId) {
-    return res.status(400).send({ erro: 'Campos obrigatórios: numero, mensagem, sessionId' });
-  }
+    const { numero, mensagem, schoolId } = req.body;
+    const client = clientes[schoolId];
+    if (!client) return res.status(404).json({ erro: 'Cliente não encontrado' });
 
-  const client = sessions[sessionId];
-  if (!client) {
-    return res.status(404).send({ erro: `Sessão ${sessionId} não encontrada ou não conectada.` });
-  }
-
-  try {
-    await client.sendMessage(`${numero}@c.us`, mensagem);
-    res.send({ status: 'Mensagem enviada com sucesso!' });
-  } catch (err) {
-    console.error('❌ Erro ao enviar mensagem:', err);
-    res.status(500).send({ erro: 'Erro ao enviar mensagem' });
-  }
+    try {
+        const chatId = numero.includes('@c.us') ? numero : `${numero}@c.us`;
+        await client.sendMessage(chatId, mensagem);
+        res.json({ sucesso: true });
+    } catch (erro) {
+        console.error(erro);
+        res.status(500).json({ erro: 'Erro ao enviar mensagem' });
+    }
 });
 
-// 🚀 Iniciar servidor
+// 🌐 Inicia servidor
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+server.listen(PORT, async () => {
+    console.log(`🚀 Servidor rodando na porta ${PORT}`);
+    await restaurarSessoesDoFirebase();
 });
