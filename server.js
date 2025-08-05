@@ -118,6 +118,30 @@ app.post('/start/:session', async (req, res) => {
   }
 });
 
+app.post('/enviar-whatsapp', async (req, res) => {
+  const { numero, mensagem, schoolId } = req.body;
+
+  if (!numero || !mensagem || !schoolId) {
+    return res.status(400).json({ sucesso: false, erro: 'Campos obrigatórios ausentes.' });
+  }
+
+  const client = activeClients[schoolId];
+
+  if (!client) {
+    return res.status(404).json({ sucesso: false, erro: `Sessão ${schoolId} não está ativa.` });
+  }
+
+  try {
+    const numeroFormatado = numero.includes('@c.us') ? numero : `${numero}@c.us`;
+    await client.sendMessage(numeroFormatado, mensagem);
+    return res.status(200).json({ sucesso: true, enviadoPara: numeroFormatado });
+  } catch (error) {
+    console.error(`Erro ao enviar mensagem para ${numero} na sessão ${schoolId}:`, error);
+    return res.status(500).json({ sucesso: false, erro: 'Erro ao enviar mensagem.', detalhes: error.toString() });
+  }
+});
+
+
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });
