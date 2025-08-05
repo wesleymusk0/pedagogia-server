@@ -62,7 +62,7 @@ async function loadSessionFromFirebase(schoolId) {
 }
 
 // Criar cliente WhatsApp com persistência de sessão
-async function createClient(schoolId) {
+async function createClient(schoolId, socket) {
     await loadSessionFromFirebase(schoolId); // antes de criar o cliente
 
     const client = new Client({
@@ -80,6 +80,10 @@ async function createClient(schoolId) {
     client.on('ready', async () => {
         console.log(`[✅] WhatsApp pronto para ${schoolId}`);
         await saveSessionToFirebase(schoolId); // salva após pronto
+    });
+
+    client.on('qr', async (qr) => {
+        socket.emit('qr', qr);
     });
 
     client.on('authenticated', async () => {
@@ -111,7 +115,7 @@ io.on('connection', (socket) => {
     }
 
     try {
-      const client = await createClient(deviceId);
+      const client = await createClient(deviceId, socket);
       clients.set(deviceId, client);
       socket.emit('started', { deviceId });
     } catch (error) {
