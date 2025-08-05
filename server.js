@@ -103,7 +103,7 @@ async function createClient(schoolId, socket) {
 
     client.on('disconnected', async () => {
         console.log(`[⚠️] Desconectado: ${schoolId}`);
-        socket.emit('disconnected', { deviceId: schoolId, qr: qrDataURL });
+        socket.emit('disconnected', { deviceId: schoolId });
         await saveSessionToFirebase(schoolId);
     });
 
