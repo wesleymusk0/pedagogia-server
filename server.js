@@ -32,12 +32,18 @@ async function uploadSessionToFirebase(sessionName) {
   if (!fs.existsSync(sessionPath)) return;
 
   const files = fs.readdirSync(sessionPath);
+  
   for (const file of files) {
     const filePath = path.join(sessionPath, file);
-    const content = fs.readFileSync(filePath, { encoding: 'base64' });
-    await db.ref(`sessions/${sessionName}/${file}`).set(content);
+    const stat = fs.statSync(filePath);
+
+    if (stat.isFile()) {
+      const content = fs.readFileSync(filePath, { encoding: 'base64' });
+      await db.ref(`sessions/${sessionName}/${file}`).set(content);
+    }
   }
 }
+
 
 async function restoreSessionFromFirebase(sessionName) {
   const sessionPath = getSessionPath(sessionName);
