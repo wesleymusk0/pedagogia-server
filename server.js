@@ -16,6 +16,11 @@ admin.initializeApp({
 });
 const db = admin.database();
 
+// Teste simples
+db.ref('teste-systematrix').set({ status: 'ok', timestamp: Date.now() })
+  .then(() => console.log('✅ Firebase Database funciona'))
+  .catch((error) => console.error('❌ Erro ao gravar no Firebase:', error));
+
 // =============== CONFIG EXPRESS E SOCKET.IO ===============
 const app = express();
 const server = http.createServer(app);
