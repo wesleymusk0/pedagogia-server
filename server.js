@@ -1,7 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { Client, LegacySessionAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const admin = require('firebase-admin');
 const QRCode = require('qrcode');
 const cors = require('cors');
