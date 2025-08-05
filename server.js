@@ -1,189 +1,155 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const admin = require('firebase-admin');
 const QRCode = require('qrcode');
-const path = require('path');
-const fs = require('fs');
 const cors = require('cors');
+const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
-// ========= CONFIG FIREBASE =========
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON); // RECOMENDADO: usar variável de ambiente
+// 🔐 Firebase Admin Init
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://pedagogia-systematrix-default-rtdb.firebaseio.com" // Altere aqui
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
 });
-const db = admin.database();
+const bucket = admin.storage().bucket();
 
-// ========= EXPRESS SETUP =========
+// 🌐 Express Setup
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
 app.use(cors());
 app.use(express.json());
-const PORT = process.env.PORT || 3000;
 
-// ========= SESSÕES =========
-const activeClients = {};
+// 📁 Sessões em memória
+const sessions = {};
 
-function getSessionPath(sessionName) {
-  return path.join(__dirname, `.wwebjs_auth/session-${sessionName}`);
-}
-
-function listFilesRecursive(dir) {
-  let results = [];
-  const list = fs.readdirSync(dir);
-  for (const file of list) {
-    const filePath = path.join(dir, file);
-    const stat = fs.statSync(filePath);
-    if (stat && stat.isDirectory()) {
-      results = results.concat(listFilesRecursive(filePath));
-    } else {
-      results.push(filePath);
-    }
-  }
-  return results;
-}
-
-async function uploadSessionToFirebase(sessionName) {
-  const sessionPath = getSessionPath(sessionName);
-
-  if (!fs.existsSync(sessionPath)) {
-    console.warn(`⚠️ Sessão ${sessionName}: pasta de sessão não encontrada.`);
-    return;
-  }
-
-  const files = listFilesRecursive(sessionPath);
-  if (files.length === 0) {
-    console.warn(`⚠️ Sessão ${sessionName}: pasta de sessão está vazia.`);
-  }
+// ⬇️ Baixar arquivos da sessão do Firebase
+async function restaurarSessao(sessionId) {
+  const files = [
+    `whatsapp-sessions/${sessionId}/Default/session-0.json`,
+    `whatsapp-sessions/${sessionId}/Default/session-1.json`,
+    `whatsapp-sessions/${sessionId}/DevToolsActivePort`,
+  ];
 
   for (const filePath of files) {
-    const relativePath = path.relative(sessionPath, filePath); // mantém estrutura
-    const content = fs.readFileSync(filePath, { encoding: 'base64' });
-    await db.ref(`sessions/${sessionName}/${relativePath}`).set(content);
-    console.log(`📁 Sessão ${sessionName}: arquivo ${relativePath} salvo no Firebase.`);
-  }
+    const localPath = path.join(os.homedir(), `.wwebjs_auth`, sessionId, filePath.split('/').slice(2).join('/'));
+    const fileDir = path.dirname(localPath);
+    fs.mkdirSync(fileDir, { recursive: true });
 
-  console.log(`✅ Sessão ${sessionName} salva no Firebase.`);
-}
+    const remoteFile = bucket.file(filePath);
+    const exists = (await remoteFile.exists())[0];
 
-async function restoreSessionFromFirebase(sessionName) {
-  const sessionPath = getSessionPath(sessionName);
-  fs.mkdirSync(sessionPath, { recursive: true });
-
-  const snapshot = await db.ref(`sessions/${sessionName}`).once('value');
-  const files = snapshot.val();
-  if (files) {
-    for (const [file, base64] of Object.entries(files)) {
-      const filePath = path.join(sessionPath, file);
-      fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+    if (exists) {
+      await remoteFile.download({ destination: localPath });
+      console.log(`📥 ${filePath} restaurado para ${localPath}`);
+    } else {
+      console.log(`⚠️ ${filePath} não encontrado no Firebase`);
     }
   }
 }
 
-async function listarSessoesSalvasNoFirebase() {
-  const snapshot = await db.ref('sessions').once('value');
-  return snapshot.exists() ? Object.keys(snapshot.val()) : [];
-}
+// ⬆️ Enviar arquivos da sessão para o Firebase
+async function salvarSessao(sessionId) {
+  const basePath = path.join(os.homedir(), `.wwebjs_auth`, sessionId);
+  const files = [
+    `Default/session-0.json`,
+    `Default/session-1.json`,
+    `DevToolsActivePort`,
+  ];
 
-async function startSession(sessionName, res) {
-  if (activeClients[sessionName]) {
-    if (!res.headersSent) res.send({ status: 'Já conectado' });
-    return;
+  for (const fileRelPath of files) {
+    const localPath = path.join(basePath, fileRelPath);
+    if (fs.existsSync(localPath)) {
+      const remotePath = `whatsapp-sessions/${sessionId}/${fileRelPath}`;
+      await bucket.upload(localPath, { destination: remotePath });
+      console.log(`📁 Sessão ${sessionId}: arquivo ${fileRelPath} salvo no Firebase.`);
+    } else {
+      console.log(`❌ Sessão ${sessionId}: arquivo ${fileRelPath} não encontrado localmente.`);
+    }
   }
 
-  await restoreSessionFromFirebase(sessionName);
+  console.log(`✅ Sessão ${sessionId} salva no Firebase.`);
+}
+
+// 🚀 Inicializar nova sessão
+async function iniciarSessao(sessionId, socket) {
+  await restaurarSessao(sessionId);
 
   const client = new Client({
-    authStrategy: new LocalAuth({ clientId: sessionName }),
-    puppeteer: { args: ['--no-sandbox'] }
+    authStrategy: new LocalAuth({ clientId: sessionId }),
+    puppeteer: { headless: true, args: ['--no-sandbox'] },
   });
 
-  let responseSent = false;
+  sessions[sessionId] = client;
 
-  client.on('qr', qr => {
-    if (responseSent) return;
-    QRCode.toDataURL(qr, (err, url) => {
-      if (!responseSent && !res.headersSent) {
-        res.send({ status: 'QRCode', qr: url });
-        responseSent = true;
-      }
-    });
+  client.on('qr', async qr => {
+    const qrDataUrl = await QRCode.toDataURL(qr);
+    socket.emit('qr', { sessionId, qr: qrDataUrl });
+    console.log(`📲 QR Code gerado para sessão ${sessionId}`);
+  });
+
+  client.on('authenticated', () => {
+    console.log(`🔐 Sessão ${sessionId} autenticada`);
   });
 
   client.on('ready', async () => {
-    console.log(`✅ Sessão ${sessionName} pronta`);
-    await uploadSessionToFirebase(sessionName);
-    if (!responseSent && !res.headersSent) {
-      res.send({ status: 'Conectado e pronto' });
-      responseSent = true;
-    }
-  });
-
-  client.on('authenticated', async () => {
-    console.log(`🔐 Sessão ${sessionName} autenticada`);
-    await uploadSessionToFirebase(sessionName);
+    console.log(`✅ Sessão ${sessionId} pronta`);
+    await salvarSessao(sessionId);
   });
 
   client.on('disconnected', reason => {
-      console.log(`❌ Sessão ${sessionName} desconectada: ${reason}`);
-      delete activeClients[sessionName];
-    
-      const sessionPath = getSessionPath(sessionName);
-      if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-        console.log(`🗑 Sessão ${sessionName}: pasta local removida.`);
-      }
-    });
+    console.log(`⚠️ Sessão ${sessionId} desconectada: ${reason}`);
+    client.destroy();
+    delete sessions[sessionId];
+  });
 
-  client.initialize();
-  activeClients[sessionName] = client;
+  await client.initialize();
 }
-// ========= ROTAS =========
 
-app.post('/start/:session', async (req, res) => {
-  const sessionName = req.params.session;
-  try {
-    await startSession(sessionName, res);
-  } catch (e) {
-    console.error(e);
-    res.status(500).send({ error: 'Erro ao iniciar sessão' });
-  }
-});
+// 🔌 WebSocket: iniciar sessão
+io.on('connection', socket => {
+  console.log('📡 Cliente conectado');
 
-app.post('/enviar-whatsapp', async (req, res) => {
-  const { numero, mensagem, schoolId } = req.body;
-
-  if (!numero || !mensagem || !schoolId) {
-    return res.status(400).json({ sucesso: false, erro: 'Campos obrigatórios ausentes.' });
-  }
-
-  const client = activeClients[schoolId];
-
-  if (!client) {
-    return res.status(404).json({ sucesso: false, erro: `Sessão ${schoolId} não está ativa.` });
-  }
-
-  try {
-    const numeroFormatado = numero.includes('@c.us') ? numero : `${numero}@c.us`;
-    await client.sendMessage(numeroFormatado, mensagem);
-    return res.status(200).json({ sucesso: true, enviadoPara: numeroFormatado });
-  } catch (error) {
-    console.error(`Erro ao enviar mensagem para ${numero} na sessão ${schoolId}:`, error);
-    return res.status(500).json({ sucesso: false, erro: 'Erro ao enviar mensagem.', detalhes: error.toString() });
-  }
-});
-
-(async () => {
-  const sessoes = await listarSessoesSalvasNoFirebase();
-  for (const sessionName of sessoes) {
-    console.log(`🔁 Restaurando sessão ${sessionName} do Firebase...`);
-    try {
-      await startSession(sessionName, { send: () => {}, headersSent: true }); // Ignora resposta HTTP
-    } catch (err) {
-      console.error(`Erro ao restaurar sessão ${sessionName}:`, err);
+  socket.on('iniciar-sessao', async sessionId => {
+    if (sessions[sessionId]) {
+      console.log(`ℹ️ Sessão ${sessionId} já está ativa.`);
+      return;
     }
-  }
-})();
+    try {
+      await iniciarSessao(sessionId, socket);
+    } catch (err) {
+      console.error(`❌ Erro ao iniciar sessão ${sessionId}:`, err);
+    }
+  });
+});
 
-app.listen(PORT, () => {
+// 📤 Enviar mensagem
+app.post('/enviar-whatsapp', async (req, res) => {
+  const { numero, mensagem, sessionId } = req.body;
+  if (!numero || !mensagem || !sessionId) {
+    return res.status(400).send({ erro: 'Campos obrigatórios: numero, mensagem, sessionId' });
+  }
+
+  const client = sessions[sessionId];
+  if (!client) {
+    return res.status(404).send({ erro: `Sessão ${sessionId} não encontrada ou não conectada.` });
+  }
+
+  try {
+    await client.sendMessage(`${numero}@c.us`, mensagem);
+    res.send({ status: 'Mensagem enviada com sucesso!' });
+  } catch (err) {
+    console.error('❌ Erro ao enviar mensagem:', err);
+    res.status(500).send({ erro: 'Erro ao enviar mensagem' });
+  }
+});
+
+// 🚀 Iniciar servidor
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });
