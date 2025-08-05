@@ -38,7 +38,7 @@ async function saveSessionToFirebase(schoolId) {
         const sessionPath = path.join(__dirname, 'sessions', `${schoolId}.json`);
         if (fs.existsSync(sessionPath)) {
             const sessionData = await fs.readFile(sessionPath, 'utf8');
-            await axios.put(`${FIREBASE_DB_URL}/whatsapp-sessions/${schoolId}.json`, {
+            await axios.put(`${FIREBASE_DB_URL}/whatsapp-sessions/${schoolId}`, {
                 data: Buffer.from(sessionData).toString('base64')
             });
             console.log(`[✅] Sessão de ${schoolId} salva no Firebase`);
@@ -81,6 +81,7 @@ async function createClient(schoolId, socket) {
 
     client.on('ready', async () => {
         console.log(`[✅] WhatsApp pronto para ${schoolId}`);
+        socket.emit('ready', { deviceId: schoolId });
         await saveSessionToFirebase(schoolId); // salva após pronto
     });
 
@@ -96,6 +97,7 @@ async function createClient(schoolId, socket) {
 
     client.on('authenticated', async () => {
         console.log(`[🔐] Autenticado: ${schoolId}`);
+      
         await saveSessionToFirebase(schoolId);
     });
 
