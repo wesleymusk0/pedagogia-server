@@ -1,23 +1,28 @@
 {
-  "name": "whatsapp-pedagogico",
+  "name": "systematrix-whatsapp-backend",
   "version": "1.0.0",
-  "description": "Servidor Node.js para envio automático de relatórios pedagógicos via WhatsApp",
-  "main": "server.js",
-  "type": "commonjs",
+  "description": "Servidor backend com múltiplas sessões WhatsApp usando whatsapp-web.js e Firebase via REST.",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js"
   },
-  "engines": {
-    "node": "18.x"
-  },
-  "author": "Systematrix",
+  "keywords": [
+    "whatsapp",
+    "web.js",
+    "firebase",
+    "socket.io",
+    "systematrix",
+    "educação"
+  ],
+  "author": "Wesley - Systematrix",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
-    "firebase-admin": "^11.11.1",
-    "qrcode-terminal": "^0.12.0",
-    "socket.io": "^4.7.2",
-    "qrcode": "^1.5.1", 
+    "axios": "^1.6.8",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "fs-extra": "^11.2.0",
+    "qrcode": "^1.5.3",
+    "socket.io": "^4.7.5",
     "whatsapp-web.js": "^1.23.0"
   }
 }
