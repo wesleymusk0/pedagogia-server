@@ -85,7 +85,7 @@ async function createClient(schoolId, socket) {
     client.on('qr', async (qr) => {
         try {
             const qrDataURL = await QRCode.toDataURL(qr);
-            socket.emit('qr', qrDataURL);
+            socket.emit('qr', { deviceId: schoolId, qr: qrDataURL });
             console.log(`[📲] QR code emitido para ${schoolId}`);
         } catch (err) {
             console.error(`[❌] Erro ao gerar QR para ${schoolId}:`, err.message);
