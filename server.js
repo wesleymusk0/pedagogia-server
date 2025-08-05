@@ -14,7 +14,7 @@ const serviceAccount = require('./pedagogia-systematrix-firebase-adminsdk-fbsvc-
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: 'https://pedagogia-systematrix.firebaseio.com'
+  databaseURL: 'https://pedagogia-systematrix-default-rtdb.firebaseio.com'
 });
 const db = admin.database();
 
