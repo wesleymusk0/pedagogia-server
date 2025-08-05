@@ -39,6 +39,8 @@ async function saveSessionToFirebase(schoolId) {
         const sessionPath = path.join(__dirname, 'sessions', `${schoolId}.json`);
         if (fs.existsSync(sessionPath)) {
             const sessionData = await fs.readFile(sessionPath, 'utf8');
+            console.log(`[📁] Salvando sessão de ${schoolId}...`);
+            console.log(`[📄] Conteúdo da sessão base64:`, Buffer.from(sessionData).toString('base64'));
             await axios.put(`${FIREBASE_DB_URL}/whatsapp-sessions/${schoolId}.json`, {
                 data: Buffer.from(sessionData).toString('base64')
             });
