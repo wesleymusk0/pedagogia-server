@@ -50,12 +50,12 @@ async function saveSessionToFirebase(schoolId) {
 
 async function loadSessionFromFirebase(schoolId) {
     try {
-        const res = await axios.get(`${FIREBASE_DB_URL}/whatsapp-sessions/${schoolId}.json`);
+        const res = await axios.get(`${FIREBASE_DB_URL}/whatsapp-sessions/${schoolId}`);
         if (res.data && res.data.data) {
             const sessionData = Buffer.from(res.data.data, 'base64').toString('utf8');
             const sessionPath = path.join(__dirname, 'sessions');
             await fs.ensureDir(sessionPath);
-            await fs.writeFile(path.join(sessionPath, `${schoolId}.json`), sessionData, 'utf8');
+            await fs.writeFile(path.join(sessionPath, `${schoolId}`), sessionData, 'utf8');
             console.log(`[📥] Sessão de ${schoolId} restaurada do Firebase`);
         }
     } catch (err) {
