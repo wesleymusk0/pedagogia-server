@@ -8,8 +8,10 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON);
+
 admin.initializeApp({
-  credential: admin.credential.applicationDefault(),
+  credential: admin.credential.cert(serviceAccount),
   databaseURL: 'https://pedagogia-systematrix.firebaseio.com'
 });
 
