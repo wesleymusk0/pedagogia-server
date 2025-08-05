@@ -31,6 +31,7 @@ app.use(express.json());
 
 // =============== GERENCIAMENTO DE CLIENTES ===============
 const clients = new Map(); // Map<deviceId, Client>
+const activeSockets = new Map(); // Map<deviceId, socketId>
 
 async function saveSessionToFirebase(schoolId) {
     try {
@@ -116,11 +117,34 @@ io.on('connection', (socket) => {
       socket.emit('error', 'deviceId é obrigatório');
       return;
     }
-    if (clients.has(deviceId)) {
-      socket.emit('info', `Sessão ${deviceId} já está ativa.`);
-      return;
-    }
 
+    // Bloqueia chamadas simultâneas para o mesmo deviceId
+    if (activeSockets.has(deviceId)) {
+      const oldSocketId = activeSockets.get(deviceId);
+      if (oldSocketId !== socket.id) {
+        activeSockets.delete(deviceId);
+        console.log('Conexão já existente da mesma escola cancelada!')
+      }
+    }
+  
+    activeSockets.set(deviceId, socket.id);
+    
+    if (clients.has(deviceId)) {
+      const client = clients.get(deviceId);
+    
+      if (client.info?.wid) {
+        socket.emit('info', `Sessão ${deviceId} já está ativa.`);
+        return;
+      }
+    
+      try {
+        await client.destroy(); // Garante que a sessão anterior seja encerrada
+        clients.delete(deviceId);
+        console.log(`Sessão travada ${deviceId} encerrada.`);
+      } catch (e) {
+        console.warn(`Erro ao destruir sessão travada ${deviceId}:`, e.message);
+      }
+    }
     try {
       const client = await createClient(deviceId, socket);
       clients.set(deviceId, client);
@@ -136,6 +160,11 @@ io.on('connection', (socket) => {
     if (client) {
       client.destroy();
       clients.delete(deviceId);
+      for (const [deviceId, sockId] of activeSockets.entries()) {
+        if (sockId === socket.id) {
+          activeSockets.delete(deviceId);
+        }
+      }
       socket.emit('stopped', { deviceId });
       console.log(`Sessão ${deviceId} parada.`);
     }
