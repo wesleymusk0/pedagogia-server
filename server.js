@@ -1,7 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LegacySessionAuth } = require('whatsapp-web.js');
 const admin = require('firebase-admin');
 const QRCode = require('qrcode');
 const cors = require('cors');
@@ -34,80 +34,62 @@ app.use(express.json());
 const clients = new Map(); // Map<deviceId, Client>
 const activeSockets = new Map(); // Map<deviceId, socketId>
 
-async function saveSessionToFirebase(schoolId) {
-    try {
-        const sessionPath = path.join(__dirname, 'sessions', `${schoolId}.json`);
-        console.log('Verificando existência da pasta...');
-        if (fs.existsSync(sessionPath)) {
-            const sessionData = await fs.readFile(sessionPath, 'utf8');
-            console.log(`[📁] Salvando sessão de ${schoolId}...`);
-            console.log(`[📄] Conteúdo da sessão base64:`, Buffer.from(sessionData).toString('base64'));
-            await axios.put(`${FIREBASE_DB_URL}/whatsapp-sessions/${schoolId}.json`, {
-                data: Buffer.from(sessionData).toString('base64')
-            });
-            console.log(`[✅] Sessão de ${schoolId} salva no Firebase`);
-        }
-    } catch (err) {
-        console.error('[❌] Erro ao salvar sessão no Firebase:', err.message);
-    }
-}
-
-async function loadSessionFromFirebase(schoolId) {
+async function getSessionFromFirebase(schoolId) {
     try {
         const res = await axios.get(`${FIREBASE_DB_URL}/whatsapp-sessions/${schoolId}.json`);
-        if (res.data && res.data.data) {
-            const sessionData = Buffer.from(res.data.data, 'base64').toString('utf8');
-            const sessionPath = path.join(__dirname, 'sessions');
-            await fs.ensureDir(sessionPath);
-            await fs.writeFile(path.join(sessionPath, `${schoolId}.json`), sessionData, 'utf8');
-            console.log(`[📥] Sessão de ${schoolId} restaurada do Firebase`);
+        if (res.data && res.data.session) {
+            return res.data.session;
         }
     } catch (err) {
-        console.warn(`[⚠️] Sessão de ${schoolId} não encontrada no Firebase`);
+        console.warn(`[⚠️] Sessão não encontrada no Firebase: ${schoolId}`);
+    }
+    return null;
+}
+
+async function saveSessionToFirebase(schoolId, session) {
+    try {
+        await axios.put(`${FIREBASE_DB_URL}/whatsapp-sessions/${schoolId}.json`, {
+            session: session
+        });
+        console.log(`[✅] Sessão de ${schoolId} salva no Firebase`);
+    } catch (err) {
+        console.error(`[❌] Erro ao salvar sessão no Firebase:`, err.message);
     }
 }
 
 // Criar cliente WhatsApp com persistência de sessão
 async function createClient(schoolId, socket) {
-    await loadSessionFromFirebase(schoolId); // antes de criar o cliente
+    const session = await getSessionFromFirebase(schoolId);
 
     const client = new Client({
-        authStrategy: new LocalAuth({
-            dataPath: './sessions',
-            clientId: schoolId
+        authStrategy: new LegacySessionAuth({
+            session: session || undefined
         }),
         puppeteer: {
             headless: true,
             args: ['--no-sandbox']
         }
     });
-    console.log('Sessão criada!')
 
-    client.on('ready', async () => {
+    client.on('authenticated', async (sessionData) => {
+        console.log(`[🔐] Autenticado: ${schoolId}`);
+        await saveSessionToFirebase(schoolId, sessionData);
+    });
+
+    client.on('ready', () => {
         console.log(`[✅] WhatsApp pronto para ${schoolId}`);
         socket.emit('ready', { deviceId: schoolId });
-        await saveSessionToFirebase(schoolId); // salva após pronto
+    });
+
+    client.on('disconnected', () => {
+        console.log(`[⚠️] Desconectado: ${schoolId}`);
+        socket.emit('disconnected', { deviceId: schoolId });
     });
 
     client.on('qr', async (qr) => {
-        try {
-            const qrDataURL = await QRCode.toDataURL(qr);
-            socket.emit('qr', { deviceId: schoolId, qr: qrDataURL });
-            console.log(`[📲] QR code emitido para ${schoolId}`);
-        } catch (err) {
-            console.error(`[❌] Erro ao gerar QR para ${schoolId}:`, err.message);
-        }
-    });
-
-    client.on('authenticated', async () => {
-        console.log(`[🔐] Autenticado: ${schoolId}`);
-        await saveSessionToFirebase(schoolId);
-    });
-
-    client.on('disconnected', async () => {
-        console.log(`[⚠️] Desconectado: ${schoolId}`);
-        socket.emit('disconnected', { deviceId: schoolId });
-        await saveSessionToFirebase(schoolId);
+        const qrDataURL = await QRCode.toDataURL(qr);
+        socket.emit('qr', { deviceId: schoolId, qr: qrDataURL });
+        console.log(`[📲] QR code emitido para ${schoolId}`);
     });
 
     client.initialize();
