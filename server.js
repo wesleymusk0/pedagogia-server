@@ -61,7 +61,8 @@ async function restoreSessionFromFirebase(sessionName) {
 
 async function startSession(sessionName, res) {
   if (activeClients[sessionName]) {
-    return res.send({ status: 'Já conectado' });
+    if (!res.headersSent) res.send({ status: 'Já conectado' });
+    return;
   }
 
   await restoreSessionFromFirebase(sessionName);
@@ -71,15 +72,25 @@ async function startSession(sessionName, res) {
     puppeteer: { args: ['--no-sandbox'] }
   });
 
+  let responseSent = false;
+
   client.on('qr', qr => {
+    if (responseSent) return;
     QRCode.toDataURL(qr, (err, url) => {
-      res.send({ status: 'QRCode', qr: url });
+      if (!responseSent && !res.headersSent) {
+        res.send({ status: 'QRCode', qr: url });
+        responseSent = true;
+      }
     });
   });
 
   client.on('ready', async () => {
     console.log(`✅ Sessão ${sessionName} pronta`);
     await uploadSessionToFirebase(sessionName);
+    if (!responseSent && !res.headersSent) {
+      res.send({ status: 'Conectado e pronto' });
+      responseSent = true;
+    }
   });
 
   client.on('authenticated', async () => {
@@ -95,7 +106,6 @@ async function startSession(sessionName, res) {
   client.initialize();
   activeClients[sessionName] = client;
 }
-
 // ========= ROTAS =========
 
 app.post('/start/:session', async (req, res) => {
