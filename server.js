@@ -75,6 +75,7 @@ async function createClient(schoolId) {
             args: ['--no-sandbox']
         }
     });
+    console.log('Sessão criada!')
 
     client.on('ready', async () => {
         console.log(`[✅] WhatsApp pronto para ${schoolId}`);
