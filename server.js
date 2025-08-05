@@ -12,7 +12,7 @@ const path = require('path');
 const firebaseConfig = JSON.parse(process.env.FIREBASE_KEY_JSON);
 admin.initializeApp({
     credential: admin.credential.cert(firebaseConfig),
-    databaseURL: firebaseConfig.database_url,
+    databaseURL: 'https://pedagogia-systematrix-default-rtdb.firebaseio.com',
 });
 
 const db = admin.database();
