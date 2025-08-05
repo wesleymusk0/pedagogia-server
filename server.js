@@ -1,100 +1,107 @@
-require('dotenv').config();
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const { Client } = require('whatsapp-web.js');
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const admin = require('firebase-admin');
 const QRCode = require('qrcode');
+const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
-const db = require('./firebase');
 
+// ========= CONFIG FIREBASE =========
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON); // RECOMENDADO: usar variável de ambiente
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://SEU-PROJETO.firebaseio.com" // Altere aqui
+});
+const db = admin.database();
+
+// ========= EXPRESS SETUP =========
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
-
 app.use(cors());
 app.use(express.json());
+const PORT = process.env.PORT || 3000;
 
-const clients = new Map();
+// ========= SESSÕES =========
+const activeClients = {};
 
-function createClient(clientId) {
-  const sessionRef = db.ref(`sessions/${clientId}`);
-
-  return new Promise(async (resolve, reject) => {
-    const sessionData = await sessionRef.once('value').then(s => s.val());
-
-    const client = new Client({
-      puppeteer: { headless: true, args: ['--no-sandbox'] },
-      session: sessionData || undefined,
-    });
-
-    client.on('qr', qr => {
-      io.to(clientId).emit('qr', { deviceId: clientId, qr });
-    });
-
-    client.on('authenticated', session => {
-      sessionRef.set(session);
-    });
-
-    client.on('ready', () => {
-      io.to(clientId).emit('ready', { deviceId: clientId });
-      console.log(`✅ Cliente ${clientId} conectado`);
-    });
-
-    client.on('auth_failure', () => {
-      console.log(`❌ Falha de autenticação: ${clientId}`);
-      io.to(clientId).emit('auth_failure', { deviceId: clientId });
-      sessionRef.remove();
-    });
-
-    client.on('disconnected', () => {
-      console.log(`⚠️ Cliente ${clientId} desconectado`);
-      io.to(clientId).emit('disconnected', { deviceId: clientId });
-      sessionRef.remove();
-    });
-
-    client.initialize();
-    clients.set(clientId, client);
-    resolve(client);
-  });
+function getSessionPath(sessionName) {
+  return path.join(__dirname, `.wwebjs_auth/session-${sessionName}`);
 }
 
-io.on('connection', socket => {
-  const clientId = socket.handshake.query.clientId;
+async function uploadSessionToFirebase(sessionName) {
+  const sessionPath = getSessionPath(sessionName);
+  if (!fs.existsSync(sessionPath)) return;
 
-  if (!clientId) {
-    socket.disconnect();
-    return;
+  const files = fs.readdirSync(sessionPath);
+  for (const file of files) {
+    const filePath = path.join(sessionPath, file);
+    const content = fs.readFileSync(filePath, { encoding: 'base64' });
+    await db.ref(`sessions/${sessionName}/${file}`).set(content);
   }
+}
 
-  socket.join(clientId);
+async function restoreSessionFromFirebase(sessionName) {
+  const sessionPath = getSessionPath(sessionName);
+  fs.mkdirSync(sessionPath, { recursive: true });
 
-  if (!clients.has(clientId)) {
-    createClient(clientId).catch(err => {
-      console.error(`Erro ao iniciar cliente ${clientId}:`, err);
-      socket.emit('error', 'Erro ao iniciar cliente');
-    });
-  }
-
-  socket.on('send-message', async ({ number, message }) => {
-    const client = clients.get(clientId);
-    if (!client) return socket.emit('error', 'Cliente não iniciado');
-
-    try {
-      const chatId = `${number}@c.us`;
-      await client.sendMessage(chatId, message);
-      socket.emit('message-sent', { number, message });
-    } catch (err) {
-      console.error('Erro ao enviar mensagem:', err);
-      socket.emit('error', 'Erro ao enviar mensagem');
+  const snapshot = await db.ref(`sessions/${sessionName}`).once('value');
+  const files = snapshot.val();
+  if (files) {
+    for (const [file, base64] of Object.entries(files)) {
+      const filePath = path.join(sessionPath, file);
+      fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
     }
+  }
+}
+
+async function startSession(sessionName, res) {
+  if (activeClients[sessionName]) {
+    return res.send({ status: 'Já conectado' });
+  }
+
+  await restoreSessionFromFirebase(sessionName);
+
+  const client = new Client({
+    authStrategy: new LocalAuth({ clientId: sessionName }),
+    puppeteer: { args: ['--no-sandbox'] }
   });
+
+  client.on('qr', qr => {
+    QRCode.toDataURL(qr, (err, url) => {
+      res.send({ status: 'QRCode', qr: url });
+    });
+  });
+
+  client.on('ready', async () => {
+    console.log(`✅ Sessão ${sessionName} pronta`);
+    await uploadSessionToFirebase(sessionName);
+  });
+
+  client.on('authenticated', async () => {
+    console.log(`🔐 Sessão ${sessionName} autenticada`);
+    await uploadSessionToFirebase(sessionName);
+  });
+
+  client.on('disconnected', reason => {
+    console.log(`❌ Sessão ${sessionName} desconectada: ${reason}`);
+    delete activeClients[sessionName];
+  });
+
+  client.initialize();
+  activeClients[sessionName] = client;
+}
+
+// ========= ROTAS =========
+
+app.post('/start/:session', async (req, res) => {
+  const sessionName = req.params.session;
+  try {
+    await startSession(sessionName, res);
+  } catch (e) {
+    console.error(e);
+    res.status(500).send({ error: 'Erro ao iniciar sessão' });
+  }
 });
 
-app.get('/', (req, res) => {
-  res.send('Servidor WhatsApp Web está no ar.');
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`🚀 Servidor iniciado em http://localhost:${PORT}`);
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });
