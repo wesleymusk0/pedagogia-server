@@ -55,7 +55,7 @@ async function loadSessionFromFirebase(schoolId) {
             const sessionData = Buffer.from(res.data.data, 'base64').toString('utf8');
             const sessionPath = path.join(__dirname, 'sessions');
             await fs.ensureDir(sessionPath);
-            await fs.writeFile(path.join(sessionPath, `${schoolId}`), sessionData, 'utf8');
+            await fs.writeFile(path.join(sessionPath, `${schoolId}.json`), sessionData, 'utf8');
             console.log(`[📥] Sessão de ${schoolId} restaurada do Firebase`);
         }
     } catch (err) {
