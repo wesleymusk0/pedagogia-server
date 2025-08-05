@@ -62,7 +62,7 @@ async function loadSessionFromFirebase(schoolId) {
 }
 
 // Criar cliente WhatsApp com persistência de sessão
-async function createClient(deviceId) {
+async function createClient(schoolId) {
     await loadSessionFromFirebase(schoolId); // antes de criar o cliente
 
     const client = new Client({
