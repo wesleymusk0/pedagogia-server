@@ -27,6 +27,21 @@ function getSessionPath(sessionName) {
   return path.join(__dirname, `.wwebjs_auth/session-${sessionName}`);
 }
 
+function listFilesRecursive(dir) {
+  let results = [];
+  const list = fs.readdirSync(dir);
+  for (const file of list) {
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+    if (stat && stat.isDirectory()) {
+      results = results.concat(listFilesRecursive(filePath));
+    } else {
+      results.push(filePath);
+    }
+  }
+  return results;
+}
+
 async function uploadSessionToFirebase(sessionName) {
   const sessionPath = getSessionPath(sessionName);
 
@@ -35,20 +50,16 @@ async function uploadSessionToFirebase(sessionName) {
     return;
   }
 
-  const files = fs.readdirSync(sessionPath);
+  const files = listFilesRecursive(sessionPath);
   if (files.length === 0) {
     console.warn(`⚠️ Sessão ${sessionName}: pasta de sessão está vazia.`);
   }
 
-  for (const file of files) {
-    const filePath = path.join(sessionPath, file);
-    const stat = fs.statSync(filePath);
-
-    if (stat.isFile()) {
-      const content = fs.readFileSync(filePath, { encoding: 'base64' });
-      await db.ref(`sessions/${sessionName}/${file}`).set(content);
-      console.log(`📁 Sessão ${sessionName}: arquivo ${file} salvo no Firebase.`);
-    }
+  for (const filePath of files) {
+    const relativePath = path.relative(sessionPath, filePath); // mantém estrutura
+    const content = fs.readFileSync(filePath, { encoding: 'base64' });
+    await db.ref(`sessions/${sessionName}/${relativePath}`).set(content);
+    console.log(`📁 Sessão ${sessionName}: arquivo ${relativePath} salvo no Firebase.`);
   }
 
   console.log(`✅ Sessão ${sessionName} salva no Firebase.`);
