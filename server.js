@@ -29,10 +29,17 @@ function getSessionPath(sessionName) {
 
 async function uploadSessionToFirebase(sessionName) {
   const sessionPath = getSessionPath(sessionName);
-  if (!fs.existsSync(sessionPath)) return;
+
+  if (!fs.existsSync(sessionPath)) {
+    console.warn(`⚠️ Sessão ${sessionName}: pasta de sessão não encontrada.`);
+    return;
+  }
 
   const files = fs.readdirSync(sessionPath);
-  
+  if (files.length === 0) {
+    console.warn(`⚠️ Sessão ${sessionName}: pasta de sessão está vazia.`);
+  }
+
   for (const file of files) {
     const filePath = path.join(sessionPath, file);
     const stat = fs.statSync(filePath);
@@ -40,10 +47,12 @@ async function uploadSessionToFirebase(sessionName) {
     if (stat.isFile()) {
       const content = fs.readFileSync(filePath, { encoding: 'base64' });
       await db.ref(`sessions/${sessionName}/${file}`).set(content);
+      console.log(`📁 Sessão ${sessionName}: arquivo ${file} salvo no Firebase.`);
     }
   }
-}
 
+  console.log(`✅ Sessão ${sessionName} salva no Firebase.`);
+}
 
 async function restoreSessionFromFirebase(sessionName) {
   const sessionPath = getSessionPath(sessionName);
