@@ -8,8 +8,8 @@ const admin = require('firebase-admin');
 
 // Inicialize o Firebase Admin SDK
 // Em produção (Render), o JSON virá de uma variável de ambiente.
-const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+const serviceAccount = process.env.FIREBASE_KEY_JSON
+    ? JSON.parse(process.env.FIREBASE_KEY_JSON)
     : require('./firebase-service-account.json');
 
 admin.initializeApp({
