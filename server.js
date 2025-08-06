@@ -97,28 +97,44 @@ async function iniciarSessao(schoolId, socket) {
 
 // Verificação completa no início da conexão
 async function verificarEstadoInicial(schoolId, socket) {
-    const authPath = path.join(SESSIONS_DIR, schoolId);
-
-    // Se já existe cliente e está conectado, confirma
+    // Se cliente já está conectado, apenas avisa
     if (clients[schoolId] && verificarConexao(clients[schoolId])) {
         socket.emit('ready');
         return;
     }
 
-    // Caso contrário, tenta restaurar sessão do Firebase
-    try {
-        const sessionPath = await restaurarSessao(schoolId);
-        if (sessionPath) {
-            console.log(`📂 Sessão restaurada para ${schoolId}`);
-        } else {
-            console.log(`⚠️ Nenhuma sessão encontrada no Firebase para ${schoolId}`);
-        }
-    } catch (err) {
-        console.error(`⚠️ Erro ao restaurar sessão ${schoolId}:`, err);
+    const sessionPath = getSessionPath(schoolId);
+    const existeNoFirebase = await db.ref(`sessions/${schoolId}`).once('value');
+
+    if (!existeNoFirebase.exists()) {
+        console.log(`⚠️ Sessão não encontrada no Firebase: ${schoolId}`);
+        iniciarSessao(schoolId, socket); // Vai gerar QR rapidamente
+        return;
     }
 
-    // Inicia nova instância
-    iniciarSessao(schoolId, socket);
+    try {
+        fs.writeFileSync(sessionPath, Buffer.from(existeNoFirebase.val(), 'base64'));
+        console.log(`📂 Sessão restaurada de ${schoolId}`);
+
+        // Iniciar sessão normalmente
+        iniciarSessao(schoolId, socket);
+
+        // Aguarda até 10 segundos para confirmar conexão
+        setTimeout(() => {
+            const client = clients[schoolId];
+            if (!verificarConexao(client)) {
+                console.log(`⚠️ Sessão de ${schoolId} falhou. Forçando QR...`);
+                client.logout().then(() => {
+                    iniciarSessao(schoolId, socket);
+                }).catch(() => {
+                    iniciarSessao(schoolId, socket);
+                });
+            }
+        }, 10000); // 10 segundos de tolerância
+    } catch (err) {
+        console.error(`❌ Erro ao restaurar sessão de ${schoolId}:`, err);
+        iniciarSessao(schoolId, socket);
+    }
 }
 
 // WebSocket
