@@ -10,8 +10,8 @@ const axios = require('axios');
 const admin = require('firebase-admin');
 
 // O resto do seu código de inicialização do Firebase permanece o mesmo...
-const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+const serviceAccount = process.env.FIREBASE_KEY_JSON
+    ? JSON.parse(process.env.FIREBASE_KEY_JSON)
     : require('./firebase-service-account.json');
 
 admin.initializeApp({
