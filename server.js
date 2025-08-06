@@ -113,7 +113,14 @@ io.on('connection', socket => {
         if (!clientes[sessionId]) {
             iniciarCliente(sessionId);
         } else {
-            socket.emit('ready');
+            const client = clientes[sessionId];
+            if (client.info && client.info.wid) {
+                // Sessão realmente está pronta
+                socket.emit('ready');
+            } else {
+                console.log(`ℹ️ Sessão ${sessionId} ainda está inicializando`);
+                // Não envia nada — deixa os eventos do client ('qr', 'ready', etc.) fazerem isso
+            }
         }
     });
 });
