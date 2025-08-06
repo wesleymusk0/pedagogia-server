@@ -28,8 +28,17 @@ function verificarConexao(client) {
     return !!(client && client.info && client.info.wid);
 }
 
+function ensureSessionDir(schoolId) {
+    const authPath = path.join(SESSIONS_DIR, schoolId, 'Default');
+    fs.mkdirSync(authPath, { recursive: true });
+}
+
 function iniciarSessao(schoolId, socket) {
     const authPath = path.join(SESSIONS_DIR, schoolId);
+
+    // Cria a estrutura de pastas esperada
+    ensureSessionDir(schoolId);
+
     const client = new Client({
         authStrategy: new LocalAuth({ dataPath: authPath }),
         puppeteer: { headless: true, args: ['--no-sandbox'] }
