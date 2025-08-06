@@ -14,7 +14,7 @@ const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: `https://pedagogia-systematrix.firebaseio.com` // <-- CONFIRME SE ESTA É SUA URL
+  databaseURL: `https://pedagogia-systematrix-default-rtdb.firebaseio.com/` // <-- CONFIRME SE ESTA É SUA URL
 });
 
 const db = admin.database();
