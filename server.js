@@ -20,129 +20,173 @@ const PORT = process.env.PORT || 10000;
 const SESSIONS_DIR = path.join(__dirname, 'sessions');
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR);
 
+// Objeto para rastrear os clientes ativos por schoolId
 const clients = {};
 
 // Cria estrutura de diretório local para a sessão
 function ensureSessionDir(schoolId) {
-    const authPath = path.join(SESSIONS_DIR, schoolId, 'Default');
+    const authPath = path.join(SESSIONS_DIR, schoolId);
     fs.mkdirSync(authPath, { recursive: true });
 }
 
-// Caminho do arquivo session.json
-function getSessionFile(schoolId) {
-    return path.join(SESSIONS_DIR, schoolId, 'Default', 'session.json');
+// Caminho do arquivo de autenticação dentro da pasta de sessão
+// whatsapp-web.js cria uma pasta "Default" dentro do dataPath
+function getSessionPath(schoolId) {
+    return path.join(SESSIONS_DIR, schoolId);
 }
 
 // Verifica se o cliente está realmente conectado ao WhatsApp
 function verificarConexao(client) {
+    // A verificação mais confiável é ver se o cliente tem um 'wid' (WhatsApp ID)
     return !!(client && client.info && client.info.wid);
 }
 
-// Inicia nova sessão ou reconecta
+// Função para iniciar uma nova sessão ou reconectar
 function iniciarSessao(schoolId, socket) {
     console.log(`🚀 Iniciando sessão para ${schoolId}`);
+    
+    const authPath = getSessionPath(schoolId);
     ensureSessionDir(schoolId);
 
-    const authPath = path.join(SESSIONS_DIR, schoolId);
     const client = new Client({
         authStrategy: new LocalAuth({ dataPath: authPath }),
-        puppeteer: { headless: true, args: ['--no-sandbox'] }
+        puppeteer: { 
+            headless: true, 
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process', // <- pode ajudar em ambientes com pouca memória
+                '--disable-gpu'
+            ]
+        }
     });
 
+    // Armazena o cliente recém-criado no nosso objeto de rastreamento
     clients[schoolId] = client;
 
     client.on('qr', async qr => {
         console.log(`📲 QR gerado para ${schoolId}`);
-        const qrCode = await QRCode.toDataURL(qr);
-        socket.emit('qr', qrCode);
+        try {
+            const qrCode = await QRCode.toDataURL(qr);
+            socket.emit('qr', qrCode); // Envia o QR para o socket correto
+        } catch (err) {
+            console.error(`Erro ao gerar QR Code para ${schoolId}:`, err);
+        }
     });
 
     client.on('ready', () => {
         console.log(`✅ WhatsApp pronto para ${schoolId}`);
         socket.emit('ready');
-
-        const sessionPath = getSessionFile(schoolId);
-        if (fs.existsSync(sessionPath)) {
-            const sessionData = fs.readFileSync(sessionPath, 'utf-8');
-            socket.emit('download-session', sessionData);
-            console.log(`📦 Arquivo de sessão enviado para ${schoolId}`);
-        }
     });
 
     client.on('authenticated', () => {
         console.log(`🔐 ${schoolId} autenticado`);
     });
 
-    client.on('disconnected', () => {
-        console.log(`❌ ${schoolId} desconectado`);
+    client.on('disconnected', (reason) => {
+        console.log(`❌ ${schoolId} desconectado. Motivo:`, reason);
         socket.emit('disconnected');
-        delete clients[schoolId];
+        // Limpa o cliente da memória após a desconexão
+        if (clients[schoolId]) {
+            delete clients[schoolId];
+        }
     });
 
-    client.initialize();
+    client.initialize().catch(err => {
+        console.error(`Falha ao inicializar cliente para ${schoolId}:`, err);
+    });
 }
 
-// Verifica se a sessão local existe e tenta reconectar, senão força QR
+// Função para verificar se a sessão local existe
 async function verificarSessaoLocal(schoolId, socket) {
     console.log(`📥 Verificando sessão local para ${schoolId}...`);
-    const sessionJsonPath = getSessionFile(schoolId);
+    const sessionDir = getSessionPath(schoolId);
+    
+    // O whatsapp-web.js cria uma pasta 'Default' se a sessão existe
+    const sessionExists = fs.existsSync(path.join(sessionDir, 'Default'));
 
-    if (!fs.existsSync(sessionJsonPath)) {
+    if (!sessionExists) {
         console.log(`📭 Sessão não encontrada para ${schoolId}. Gerando QR...`);
-        iniciarSessao(schoolId, socket);
-        return;
+    } else {
+        console.log(`📁 Sessão encontrada para ${schoolId}. Tentando conectar...`);
     }
 
-    console.log(`📁 Sessão encontrada para ${schoolId}. Tentando conectar...`);
     iniciarSessao(schoolId, socket);
-
-    // Aguarda 10 segundos. Se não conectar, força QR
-    setTimeout(() => {
-        const client = clients[schoolId];
-        if (!verificarConexao(client)) {
-            console.log(`⚠️ Sessão inválida para ${schoolId}. Forçando QR...`);
-            if (client) {
-                client.logout().then(() => {
-                    iniciarSessao(schoolId, socket);
-                }).catch(() => {
-                    iniciarSessao(schoolId, socket);
-                });
-            } else {
-                iniciarSessao(schoolId, socket);
-            }
-        } else {
-            console.log(`✅ Sessão validada com sucesso para ${schoolId}`);
-        }
-    }, 10000);
 }
 
-// Conexão via WebSocket
+// Gerenciamento da conexão via WebSocket
 io.on('connection', socket => {
-    console.log('🔗 Socket conectado');
+    console.log('🔗 Socket conectado:', socket.id);
 
     socket.on('iniciar-sessao', async (schoolId) => {
-        console.log(`🧠 Socket pediu início da sessão: ${schoolId}`);
+        console.log(`🧠 Socket [${socket.id}] pediu início da sessão: ${schoolId}`);
         if (!schoolId) {
             console.log('❌ School ID ausente!');
             return;
         }
+
+        // --- INÍCIO DA CORREÇÃO ---
+        // Verifica se já existe um cliente para este schoolId (de uma conexão anterior/zumbi)
+        if (clients[schoolId]) {
+            console.log(`👻 Encontrado cliente existente para ${schoolId}. Destruindo...`);
+            try {
+                // .destroy() encerra a instância do puppeteer e limpa os recursos
+                await clients[schoolId].destroy();
+                console.log(`✅ Cliente antigo para ${schoolId} destruído.`);
+            } catch (e) {
+                console.error(`⚠️ Erro ao destruir cliente antigo para ${schoolId}:`, e.message);
+            }
+            delete clients[schoolId]; // Remove do nosso objeto de rastreamento
+        }
+        // --- FIM DA CORREÇÃO ---
+
+        // Agora, com o ambiente limpo, procede com a criação de uma nova sessão
         verificarSessaoLocal(schoolId, socket);
     });
 
-    socket.on('upload-session', ({ sessionId, sessionData }) => {
+    socket.on('upload-session', async ({ sessionId, sessionData }) => {
         if (!sessionId || !sessionData) return;
-
         console.log(`📤 Recebido upload de sessão para ${sessionId}`);
-        const sessionPath = getSessionFile(sessionId);
+
+        // --- INÍCIO DA CORREÇÃO (Consistência) ---
+        // Garante que qualquer cliente existente seja destruído antes de restaurar a sessão
+        if (clients[sessionId]) {
+            console.log(`👻 Encontrado cliente existente para ${sessionId} antes do upload. Destruindo...`);
+            try {
+                await clients[sessionId].destroy();
+                console.log(`✅ Cliente antigo para ${sessionId} destruído.`);
+            } catch (e) {
+                console.error(`⚠️ Erro ao destruir cliente antigo para ${sessionId}:`, e.message);
+            }
+            delete clients[sessionId];
+        }
+        // --- FIM DA CORREÇÃO ---
+
+        const authPath = getSessionPath(sessionId);
         ensureSessionDir(sessionId);
 
+        // O arquivo de sessão precisa ser salvo em um local específico que o LocalAuth espera
+        const sessionFilePath = path.join(authPath, 'Default', 'session.json');
+        fs.mkdirSync(path.dirname(sessionFilePath), { recursive: true });
+
         try {
-            fs.writeFileSync(sessionPath, sessionData);
-            iniciarSessao(sessionId, socket);
+            fs.writeFileSync(sessionFilePath, sessionData);
+            console.log(`📄 Arquivo de sessão salvo em: ${sessionFilePath}`);
+            iniciarSessao(sessionId, socket); // Inicia a sessão com o arquivo restaurado
         } catch (err) {
             console.error(`❌ Erro ao restaurar sessão ${sessionId}:`, err);
             socket.emit('disconnected');
         }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('🔌 Socket desconectado:', socket.id);
+        // A lógica de limpeza agora é tratada de forma mais robusta no início de uma nova conexão,
+        // o que é mais confiável do que tentar limpar na desconexão.
     });
 });
 
@@ -151,26 +195,27 @@ app.post('/enviar-whatsapp', async (req, res) => {
     const { numero, mensagem, schoolId } = req.body;
 
     if (!numero || !mensagem || !schoolId) {
-        return res.status(400).json({ erro: 'Parâmetros obrigatórios ausentes.' });
+        return res.status(400).json({ sucesso: false, erro: 'Parâmetros obrigatórios ausentes.' });
     }
 
     const client = clients[schoolId];
-    if (!verificarConexao(client)) {
-        return res.status(500).json({ erro: 'Cliente não está conectado.' });
+    if (!client || !verificarConexao(client)) {
+        return res.status(500).json({ sucesso: false, erro: 'Cliente do WhatsApp não está conectado ou pronto.' });
     }
 
     try {
+        // Formata o número para o padrão do WhatsApp (ex: 5511999999999@c.us)
         const destinatario = numero.includes('@c.us') ? numero : `${numero}@c.us`;
         await client.sendMessage(destinatario, mensagem);
-        res.json({ sucesso: true });
-        console.log(`📤 Mensagem enviada para ${numero} (${schoolId})`);
+        res.json({ sucesso: true, mensagem: 'Mensagem enviada com sucesso.' });
+        console.log(`📤 Mensagem enviada para ${numero} (da escola ${schoolId})`);
     } catch (err) {
         console.error('Erro ao enviar mensagem:', err);
-        res.status(500).json({ erro: 'Falha ao enviar mensagem.' });
+        res.status(500).json({ sucesso: false, erro: 'Falha ao enviar mensagem.' });
     }
 });
 
-// Inicializa servidor
+// Inicializa o servidor HTTP
 server.listen(PORT, () => {
-    console.log(`🚀 Backend PedagogIA rodando na porta ${PORT}`);
+    console.log(`🚀 Servidor PedagogIA rodando na porta ${PORT}`);
 });
