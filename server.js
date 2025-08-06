@@ -55,11 +55,13 @@ async function salvarSessaoNoFirebase(sessionId) {
         return;
     }
 
+    const arquivos = fs.readdirSync(pasta); // 👈 mover para cima
+
     if (arquivos.length === 0) {
         console.warn(`❌ Nenhum arquivo encontrado na sessão: ${pasta}`);
+        return;
     }
 
-    const arquivos = fs.readdirSync(pasta);
     const dados = {};
 
     for (const arquivo of arquivos) {
