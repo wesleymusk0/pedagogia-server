@@ -26,6 +26,17 @@ app.use(express.json());
 const SESSIONS_PATH = path.join(__dirname, 'sessions');
 if (!fs.existsSync(SESSIONS_PATH)) fs.mkdirSync(SESSIONS_PATH);
 
+async function aguardarArquivosDeSessao(sessionId, maxTentativas = 10) {
+    const pasta = path.join(SESSIONS_PATH, sessionId);
+    for (let i = 0; i < maxTentativas; i++) {
+        if (fs.existsSync(pasta) && fs.readdirSync(pasta).length > 0) {
+            return true;
+        }
+        await new Promise(resolve => setTimeout(resolve, 500)); // espera 500ms
+    }
+    return false;
+}
+
 // 📦 Restaura sessões salvas no Firebase para o disco
 async function restaurarSessoesDoFirebase() {
     const snapshot = await db.ref('whatsapp-sessoes').once('value');
@@ -92,11 +103,16 @@ function iniciarCliente(sessionId) {
         console.log(`📱 QR gerado para sessão ${sessionId}`);
     });
 
-    client.on('ready', async () => {
-        console.log(`✅ Sessão ${sessionId} pronta`);
-        await salvarSessaoNoFirebase(sessionId);
-        io.to(sessionId).emit('ready');
-    });
+    async function aguardarArquivosDeSessao(sessionId, maxTentativas = 10) {
+        const pasta = path.join(SESSIONS_PATH, sessionId);
+        for (let i = 0; i < maxTentativas; i++) {
+            if (fs.existsSync(pasta) && fs.readdirSync(pasta).length > 0) {
+                return true;
+            }
+            await new Promise(resolve => setTimeout(resolve, 500)); // espera 500ms
+        }
+        return false;
+    }
 
     client.on('authenticated', () => {
         console.log(`🔐 Sessão ${sessionId} autenticada`);
