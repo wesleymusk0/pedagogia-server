@@ -50,7 +50,14 @@ async function restaurarSessoesDoFirebase() {
 // 💾 Salva sessão no Firebase Database
 async function salvarSessaoNoFirebase(sessionId) {
     const pasta = path.join(SESSIONS_PATH, sessionId);
-    if (!fs.existsSync(pasta)) return;
+    if (!fs.existsSync(pasta)) {
+        console.warn(`❌ Pasta de sessão não encontrada: ${pasta}`);
+        return;
+    }
+
+    if (arquivos.length === 0) {
+        console.warn(`❌ Nenhum arquivo encontrado na sessão: ${pasta}`);
+    }
 
     const arquivos = fs.readdirSync(pasta);
     const dados = {};
