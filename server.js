@@ -8,167 +8,124 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 
-// 🔐 Inicializa Firebase com credenciais do ambiente
-const firebaseConfig = JSON.parse(process.env.FIREBASE_KEY_JSON);
-admin.initializeApp({
-    credential: admin.credential.cert(firebaseConfig),
-    databaseURL: 'https://pedagogia-systematrix-default-rtdb.firebaseio.com',
-});
-
+// Inicialização do Firebase Admin SDK
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON);
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount), databaseURL: "https://pedagogia-systematrix-default-rtdb.firebaseio.com" });
 const db = admin.database();
+
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-const SESSIONS_PATH = path.join(__dirname, 'sessions');
-if (!fs.existsSync(SESSIONS_PATH)) fs.mkdirSync(SESSIONS_PATH);
+const PORT = process.env.PORT || 10000;
+const SESSIONS_DIR = path.join(__dirname, 'sessions');
+if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR);
 
-async function aguardarArquivosDeSessao(sessionId, maxTentativas = 10) {
-    const pasta = path.join(SESSIONS_PATH, sessionId);
-    for (let i = 0; i < maxTentativas; i++) {
-        if (fs.existsSync(pasta) && fs.readdirSync(pasta).length > 0) {
-            return true;
-        }
-        await new Promise(resolve => setTimeout(resolve, 500)); // espera 500ms
-    }
-    return false;
+const clients = {}; // Armazena instâncias do WhatsApp
+
+// Carrega sessão salva do Firebase
+async function carregarSessao(schoolId) {
+    const snapshot = await db.ref(`sessions/${schoolId}`).once('value');
+    if (!snapshot.exists()) return null;
+    const base64 = snapshot.val();
+    const sessionPath = path.join(SESSIONS_DIR, `${schoolId}.json`);
+    fs.writeFileSync(sessionPath, Buffer.from(base64, 'base64'));
+    return sessionPath;
 }
 
-// 📦 Restaura sessões salvas no Firebase para o disco
-async function restaurarSessoesDoFirebase() {
-    const snapshot = await db.ref('whatsapp-sessoes').once('value');
-    const todas = snapshot.val();
-    if (!todas) return;
-
-    for (const sessionId in todas) {
-        const arquivos = todas[sessionId];
-        const pasta = path.join(SESSIONS_PATH, sessionId);
-        if (!fs.existsSync(pasta)) fs.mkdirSync(pasta, { recursive: true });
-
-        for (const nomeArquivo in arquivos) {
-            const conteudo = arquivos[nomeArquivo];
-            fs.writeFileSync(path.join(pasta, nomeArquivo), conteudo, 'utf8');
-        }
-
-        console.log(`📁 Sessão ${sessionId} restaurada`);
-        iniciarCliente(sessionId); // Já inicia cliente após restaurar
-    }
+// Salva sessão no Firebase
+async function salvarSessao(schoolId, sessionPath) {
+    const data = fs.readFileSync(sessionPath);
+    const base64 = Buffer.from(data).toString('base64');
+    await db.ref(`sessions/${schoolId}`).set(base64);
 }
 
-// 💾 Salva sessão no Firebase Database
-async function salvarSessaoNoFirebase(sessionId) {
-    const pasta = path.join(SESSIONS_PATH, sessionId);
-    if (!fs.existsSync(pasta)) {
-        console.warn(`❌ Pasta de sessão não encontrada: ${pasta}`);
-        return;
-    }
-
-    const arquivos = fs.readdirSync(pasta); // 👈 mover para cima
-
-    if (arquivos.length === 0) {
-        console.warn(`❌ Nenhum arquivo encontrado na sessão: ${pasta}`);
-        return;
-    }
-
-    const dados = {};
-
-    for (const arquivo of arquivos) {
-        const conteudo = fs.readFileSync(path.join(pasta, arquivo), 'utf8');
-        dados[arquivo] = conteudo;
-    }
-
-    await db.ref(`whatsapp-sessoes/${sessionId}`).set(dados);
-    console.log(`✅ Sessão ${sessionId} salva no Firebase.`);
-}
-
-// 🧠 Lista de instâncias de clientes WhatsApp
-const clientes = {};
-
-// 🚀 Inicia cliente WhatsApp
-function iniciarCliente(sessionId) {
+// Cria uma nova sessão do WhatsApp
+async function iniciarSessao(schoolId, socket) {
+    const authPath = path.join(SESSIONS_DIR, schoolId);
     const client = new Client({
-        authStrategy: new LocalAuth({ clientId: sessionId, dataPath: SESSIONS_PATH }),
-        puppeteer: {
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            headless: true,
-        }
+        authStrategy: new LocalAuth({ dataPath: authPath }),
+        puppeteer: { headless: true, args: ['--no-sandbox'] }
     });
+
+    clients[schoolId] = client;
 
     client.on('qr', async qr => {
-        const qrCode = await QRCode.toDataURL(qr);
-        io.to(sessionId).emit('qr', qrCode);
-        console.log(`📱 QR gerado para sessão ${sessionId}`);
+        const qrImg = await QRCode.toDataURL(qr);
+        socket.emit('qr', qrImg);
     });
 
-    async function aguardarArquivosDeSessao(sessionId, maxTentativas = 10) {
-        const pasta = path.join(SESSIONS_PATH, sessionId);
-        for (let i = 0; i < maxTentativas; i++) {
-            if (fs.existsSync(pasta) && fs.readdirSync(pasta).length > 0) {
-                return true;
-            }
-            await new Promise(resolve => setTimeout(resolve, 500)); // espera 500ms
+    client.on('ready', async () => {
+        socket.emit('ready');
+        const sessionFile = path.join(authPath, 'Default', 'session.json');
+        if (fs.existsSync(sessionFile)) {
+            await salvarSessao(schoolId, sessionFile);
+            const sessionData = fs.readFileSync(sessionFile, 'utf-8');
+            socket.emit('download-session', sessionData);
         }
-        return false;
-    }
-
-    client.on('authenticated', () => {
-        console.log(`🔐 Sessão ${sessionId} autenticada`);
     });
 
+    client.on('authenticated', () => console.log(`✅ ${schoolId} autenticado.`));
     client.on('disconnected', async () => {
-        console.log(`⚠️ Sessão ${sessionId} desconectada`);
-        await db.ref(`whatsapp-sessoes/${sessionId}`).remove();
-        delete clientes[sessionId];
-        io.to(sessionId).emit('disconnected');
+        console.log(`❌ ${schoolId} desconectado.`);
+        socket.emit('disconnected');
+        delete clients[schoolId];
     });
 
     client.initialize();
-    clientes[sessionId] = client;
 }
 
-// 📲 Socket.io para comunicação com o frontend
+// Socket.IO
 io.on('connection', socket => {
     console.log('🔗 Socket conectado');
 
-    socket.on('iniciar-sessao', async sessionId => {
-        socket.join(sessionId);
-        if (!clientes[sessionId]) {
-            iniciarCliente(sessionId);
-        } else {
-            const client = clientes[sessionId];
-            if (client.info && client.info.wid) {
-                // Sessão realmente está pronta
-                socket.emit('ready');
-            } else {
-                console.log(`ℹ️ Sessão ${sessionId} ainda está inicializando`);
-                // Não envia nada — deixa os eventos do client ('qr', 'ready', etc.) fazerem isso
-            }
+    socket.on('iniciar-sessao', async (schoolId) => {
+        if (clients[schoolId]) {
+            socket.emit('ready');
+            return;
         }
+
+        try {
+            await carregarSessao(schoolId);
+        } catch (err) {
+            console.error('⚠️ Erro ao carregar sessão:', err);
+        }
+
+        await iniciarSessao(schoolId, socket);
+    });
+
+    socket.on('upload-session', async ({ sessionId, sessionData }) => {
+        const sessionPath = path.join(SESSIONS_DIR, `${sessionId}.json`);
+        fs.writeFileSync(sessionPath, sessionData);
+        await salvarSessao(sessionId, sessionPath);
+        await iniciarSessao(sessionId, socket);
     });
 });
 
-// 📤 Rota para enviar mensagem
+// Enviar mensagem pelo WhatsApp
 app.post('/enviar-whatsapp', async (req, res) => {
     const { numero, mensagem, schoolId } = req.body;
-    const client = clientes[schoolId];
-    if (!client) return res.status(404).json({ erro: 'Cliente não encontrado' });
+
+    if (!numero || !mensagem || !schoolId) {
+        return res.status(400).json({ erro: 'Parâmetros inválidos.' });
+    }
+
+    const client = clients[schoolId];
+    if (!client) return res.status(500).json({ erro: 'Cliente WhatsApp não conectado.' });
 
     try {
-        const chatId = numero.includes('@c.us') ? numero : `${numero}@c.us`;
-        await client.sendMessage(chatId, mensagem);
+        const numeroComDdd = numero.includes('@c.us') ? numero : `${numero}@c.us`;
+        await client.sendMessage(numeroComDdd, mensagem);
         res.json({ sucesso: true });
-    } catch (erro) {
-        console.error(erro);
-        res.status(500).json({ erro: 'Erro ao enviar mensagem' });
+    } catch (error) {
+        console.error('Erro ao enviar WhatsApp:', error);
+        res.status(500).json({ erro: 'Erro ao enviar mensagem.' });
     }
 });
 
-// 🌐 Inicia servidor
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, async () => {
+server.listen(PORT, () => {
     console.log(`🚀 Servidor rodando na porta ${PORT}`);
-    await restaurarSessoesDoFirebase();
 });
