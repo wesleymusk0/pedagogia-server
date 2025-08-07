@@ -1,34 +1,58 @@
 // whatsapp-manager.js
 
-// Importação correta da biblioteca principal
 const { Client, RemoteAuth } = require('whatsapp-web.js');
-// Importação correta da biblioteca de store. A classe chama-se MongoStore.
-const { MongoStore } = require('wwebjs-mongo');
 const admin = require('firebase-admin');
+const qrcode = require('qrcode');
 
 // Inicialize o Firebase Admin SDK
-const serviceAccount = process.env.FIREBASE_KEY_JSON
-    ? JSON.parse(process.env.FIREBASE_KEY_JSON)
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
     : require('./firebase-service-account.json');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: `https://pedagogia-systematrix-default-rtdb.firebaseio.com`
+  databaseURL: `https://pedagogia-systematrix.firebaseio.com`
 });
 
 const db = admin.database();
 
-// Criamos um "Store" compatível que usa o Firebase Realtime Database
-// A classe é MongoStore, mas funciona com o objeto 'db' do Firebase Admin
-const store = new MongoStore({
-    db: db, 
-    collectionName: 'whatsapp_sessions'
-});
+// =======================================================================
+// ===                    NOSSA PRÓPRIA FIREBASE STORE                 ===
+// ===   Esta classe simples diz à RemoteAuth como salvar e carregar    ===
+// ===          a sessão usando o Firebase Realtime Database           ===
+// =======================================================================
+class FirebaseStore {
+    constructor(clientId) {
+        if (!clientId) throw new Error('O clientId (schoolId) é obrigatório.');
+        this.path = `whatsapp_sessions/${clientId}`;
+        this.dbRef = db.ref(this.path);
+    }
+
+    async save(session) {
+        console.log(`[FirebaseStore] Salvando sessão para ${this.path}`);
+        await this.dbRef.set(session);
+    }
+
+    async retrieve() {
+        console.log(`[FirebaseStore] Recuperando sessão de ${this.path}`);
+        const snapshot = await this.dbRef.once('value');
+        return snapshot.val();
+    }
+    
+    async delete() {
+        console.log(`[FirebaseStore] Deletando sessão de ${this.path}`);
+        await this.dbRef.remove();
+    }
+}
+// =======================================================================
 
 const clients = {}; 
 
 const initializeClient = async (schoolId, socket) => {
-    console.log(`[${schoolId}] Iniciando inicialização do cliente com RemoteAuth e Firebase Store...`);
+    console.log(`[${schoolId}] Iniciando inicialização do cliente com nossa FirebaseStore...`);
+
+    // Criamos uma instância da nossa store para cada escola
+    const store = new FirebaseStore(schoolId);
     
     const client = new Client({
         authStrategy: new RemoteAuth({
@@ -44,9 +68,6 @@ const initializeClient = async (schoolId, socket) => {
 
     client.on('qr', (qr) => {
         console.log(`[${schoolId}] QR Code recebido. Enviando para o cliente.`);
-        // Para o frontend, precisamos converter o QR em uma URL de dados
-        // Vamos precisar do 'qrcode' de volta.
-        const qrcode = require('qrcode');
         qrcode.toDataURL(qr, (err, url) => {
             if (err) {
                 console.error(`[${schoolId}] Erro ao gerar QR Code:`, err);
@@ -68,8 +89,10 @@ const initializeClient = async (schoolId, socket) => {
         socket.emit('message', { text: 'WhatsApp conectado com sucesso!' });
     });
 
-    client.on('auth_failure', (msg) => {
+    client.on('auth_failure', async (msg) => {
         console.error(`[${schoolId}] Falha na autenticação:`, msg);
+        // Se a autenticação falhar, é uma boa ideia deletar a sessão corrompida
+        await store.delete();
         socket.emit('disconnected');
     });
 
