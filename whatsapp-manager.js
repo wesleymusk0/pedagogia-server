@@ -18,8 +18,7 @@ const db = admin.database();
 
 // =======================================================================
 // ===                    NOSSA PRÓPRIA FIREBASE STORE                 ===
-// ===   Esta classe simples diz à RemoteAuth como salvar e carregar    ===
-// ===          a sessão usando o Firebase Realtime Database           ===
+// ===            Agora com TODOS os métodos necessários               ===
 // =======================================================================
 class FirebaseStore {
     constructor(clientId) {
@@ -43,6 +42,14 @@ class FirebaseStore {
         console.log(`[FirebaseStore] Deletando sessão de ${this.path}`);
         await this.dbRef.remove();
     }
+
+    // === MÉTODO ADICIONADO PARA CORRIGIR O ERRO ===
+    async sessionExists() {
+        const snapshot = await this.dbRef.once('value');
+        const exists = snapshot.exists();
+        console.log(`[FirebaseStore] Verificando se sessão existe para ${this.path}: ${exists}`);
+        return exists;
+    }
 }
 // =======================================================================
 
@@ -51,14 +58,13 @@ const clients = {};
 const initializeClient = async (schoolId, socket) => {
     console.log(`[${schoolId}] Iniciando inicialização do cliente com nossa FirebaseStore...`);
 
-    // Criamos uma instância da nossa store para cada escola
     const store = new FirebaseStore(schoolId);
     
     const client = new Client({
         authStrategy: new RemoteAuth({
             clientId: schoolId,
             store: store,
-            backupSyncIntervalMs: 300000 // Salva um backup a cada 5 minutos
+            backupSyncIntervalMs: 300000 
         }),
         puppeteer: {
             headless: true,
@@ -91,7 +97,6 @@ const initializeClient = async (schoolId, socket) => {
 
     client.on('auth_failure', async (msg) => {
         console.error(`[${schoolId}] Falha na autenticação:`, msg);
-        // Se a autenticação falhar, é uma boa ideia deletar a sessão corrompida
         await store.delete();
         socket.emit('disconnected');
     });
