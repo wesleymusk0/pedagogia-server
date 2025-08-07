@@ -79,16 +79,17 @@ const initializeClient = async (schoolId, socket) => {
     const store = new FirebaseRemoteAuthStore(schoolId);
 
     const client = new Client({
-        authStrategy: new RemoteAuth({
-            clientId: schoolId,
-            store: store,
-            backupSyncIntervalMs: null, // evita arquivos .zip locais
-        }),
-        puppeteer: {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        },
-    });
+    authStrategy: new RemoteAuth({
+        clientId: schoolId,
+        store: store,
+        backupSyncIntervalMs: 60000 // Corrigido aqui
+    }),
+    puppeteer: {
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    },
+});
+
 
     let isDisconnected = false;
 
