@@ -1,98 +1,31 @@
 // whatsapp-manager.js
 
-// === INÍCIO DA MUDANÇA ===
-// A importação agora é feita diretamente, desestruturando do require principal.
-const { Client, LegacySessionAuth } = require('whatsapp-web.js');
-// === FIM DA MUDANÇA ===
-
+// Importação correta para a versão estável
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
-const axios = require('axios');
-const admin = require('firebase-admin');
 
-// O resto do seu código de inicialização do Firebase permanece o mesmo...
-const serviceAccount = process.env.FIREBASE_KEY_JSON
-    ? JSON.parse(process.env.FIREBASE_KEY_JSON)
-    : require('./firebase-service-account.json');
+// Não precisamos mais de 'axios' ou 'firebase-admin' para gerenciar a sessão!
+// O Firebase continua sendo usado no server.js para outras coisas, mas não aqui.
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: `https://pedagogia-systematrix-default-rtdb.firebaseio.com/`
-});
-
-const db = admin.database();
-const clients = {};
-
-async function uploadSessionToFileHost(sessionData) {
-    try {
-        const response = await axios.post('https://hastebin.com/documents', sessionData, {
-            headers: { 'Content-Type': 'text/plain' },
-        });
-        const key = response.data.key;
-        if (!key) {
-            throw new Error('A resposta da API do Hastebin não incluiu uma chave (key).');
-        }
-        const rawUrl = `https://hastebin.com/raw/${key}`;
-        console.log(`Sessão enviada para o Hastebin. URL raw: ${rawUrl}`);
-        return rawUrl;
-    } catch (error) {
-        console.error('Erro ao fazer upload da sessão para o Hastebin:', error.message);
-        if (error.response) {
-            console.error('Detalhes do erro da API Hastebin:', error.response.data);
-        }
-        return null;
-    }
-}
-
-async function downloadSession(url) {
-    try {
-        const response = await axios.get(url);
-        if (typeof response.data === 'string') {
-            return JSON.parse(response.data);
-        }
-        if (typeof response.data === 'object' && response.data !== null) {
-            return response.data;
-        }
-        return null;
-    } catch (error) {
-        console.error(`Falha ao baixar sessão da URL: ${url}`, error.message);
-        return null;
-    }
-}
+const clients = {}; // Objeto para armazenar as instâncias dos clientes por schoolId
 
 const initializeClient = async (schoolId, socket) => {
-    console.log(`[${schoolId}] Iniciando inicialização do cliente...`);
-
-    const sessionRef = db.ref(`escolas/${schoolId}/whatsappSession/sessionUrl`);
-    const snapshot = await sessionRef.once('value');
-    const sessionUrl = snapshot.val();
-    let sessionData = null;
-
-    if (sessionUrl) {
-        console.log(`[${schoolId}] URL de sessão encontrada. Tentando baixar...`);
-        sessionData = await downloadSession(sessionUrl);
-        if (sessionData) {
-            console.log(`[${schoolId}] Sessão baixada com sucesso.`);
-            socket.emit('message', { text: 'Sessão encontrada. Restaurando...' });
-        } else {
-            console.log(`[${schoolId}] Falha ao baixar sessão. Prosseguindo com QR code.`);
-        }
-    } else {
-        console.log(`[${schoolId}] Nenhuma sessão encontrada. Necessário escanear QR code.`);
-    }
-
-    // O código aqui agora funcionará, pois LegacySessionAuth está importado corretamente
+    console.log(`[${schoolId}] Iniciando inicialização do cliente com LocalAuth...`);
+    
+    // O clientId garante que cada escola tenha sua própria pasta de sessão
+    // dentro do disco persistente. Ex: /.wwebjs_auth/session-ll3eR1xOgq...
     const client = new Client({
-        authStrategy: new LegacySessionAuth({
-            session: sessionData 
+        authStrategy: new LocalAuth({
+            clientId: schoolId, 
         }),
         puppeteer: {
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            args: ['--no-sandbox', '--disable-setuid-sandbox'] // Necessário para rodar no Render
         }
     });
 
     client.on('qr', (qr) => {
-        console.log(`[${schoolId}] QR Code recebido.`);
+        console.log(`[${schoolId}] QR Code recebido. A pasta da sessão será criada no disco persistente após a leitura.`);
         qrcode.toDataURL(qr, (err, url) => {
             if (err) {
                 console.error(`[${schoolId}] Erro ao gerar QR Code:`, err);
@@ -103,18 +36,8 @@ const initializeClient = async (schoolId, socket) => {
         });
     });
 
-    client.on('authenticated', async (session) => {
-        console.log(`[${schoolId}] Cliente autenticado.`);
-        const sessionJson = JSON.stringify(session);
-        
-        socket.emit('download-session', sessionJson);
-        
-        const newSessionUrl = await uploadSessionToFileHost(sessionJson);
-        if (newSessionUrl) {
-            await sessionRef.set(newSessionUrl);
-            console.log(`[${schoolId}] Nova URL de sessão salva no Firebase: ${newSessionUrl}`);
-        }
-    });
+    // Evento 'authenticated' não é mais necessário para salvar a sessão,
+    // a biblioteca faz isso automaticamente.
 
     client.on('ready', () => {
         console.log(`[${schoolId}] Cliente do WhatsApp está pronto!`);
@@ -125,15 +48,15 @@ const initializeClient = async (schoolId, socket) => {
 
     client.on('auth_failure', (msg) => {
         console.error(`[${schoolId}] Falha na autenticação:`, msg);
+        // Em caso de falha, pode ser necessário limpar a pasta da sessão manualmente
+        // no disco persistente se o problema persistir.
         socket.emit('disconnected');
-        sessionRef.remove();
     });
 
     client.on('disconnected', (reason) => {
         console.log(`[${schoolId}] Cliente foi desconectado:`, reason);
         delete clients[schoolId];
         socket.emit('disconnected');
-        sessionRef.remove();
     });
 
     client.initialize().catch(err => {
