@@ -7,13 +7,13 @@ const { MongoStore } = require('wwebjs-mongo');
 const admin = require('firebase-admin');
 
 // Inicialize o Firebase Admin SDK
-const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+const serviceAccount = process.env.FIREBASE_KEY_JSON
+    ? JSON.parse(process.env.FIREBASE_KEY_JSON)
     : require('./firebase-service-account.json');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: `https://pedagogia-systematrix.firebaseio.com`
+  databaseURL: `https://pedagogia-systematrix-default-rtdb.firebaseio.com`
 });
 
 const db = admin.database();
