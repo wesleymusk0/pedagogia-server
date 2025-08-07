@@ -1,43 +1,63 @@
 // whatsapp-manager.js
 
-// Importação correta para a versão estável
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { FirebaseStore } = require('wwebjs-mongo'); // Nome enganoso, mas funciona com Firebase!
+const admin = require('firebase-admin');
 
-// Não precisamos mais de 'axios' ou 'firebase-admin' para gerenciar a sessão!
-// O Firebase continua sendo usado no server.js para outras coisas, mas não aqui.
+// Não precisamos de 'qrcode', pois a RemoteAuth não o usa diretamente dessa forma.
 
-const clients = {}; // Objeto para armazenar as instâncias dos clientes por schoolId
+// Inicialize o Firebase Admin SDK
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+    : require('./firebase-service-account.json');
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: `https://pedagogia-systematrix.firebaseio.com`
+});
+
+const db = admin.database();
+
+// Criamos um "Store" compatível que usa o Firebase Realtime Database
+const store = new FirebaseStore({
+    db: db, // Passa a instância do banco de dados do Firebase
+    collectionName: 'whatsapp_sessions' // Nome do "nó" onde as sessões serão salvas
+});
+
+// A estratégia de autenticação agora será a RemoteAuth, que é feita para isso
+const authStrategy = new RemoteAuth({
+    store: store,
+    backupSyncIntervalMs: 300000 // Salva um backup a cada 5 minutos
+});
+
+const clients = {}; 
 
 const initializeClient = async (schoolId, socket) => {
-    console.log(`[${schoolId}] Iniciando inicialização do cliente com LocalAuth...`);
+    console.log(`[${schoolId}] Iniciando inicialização do cliente com RemoteAuth e Firebase Store...`);
     
-    // O clientId garante que cada escola tenha sua própria pasta de sessão
-    // dentro do disco persistente. Ex: /.wwebjs_auth/session-ll3eR1xOgq...
+    // A RemoteAuth cuidará de verificar se já existe uma sessão para este `clientId` no Firebase
     const client = new Client({
-        authStrategy: new LocalAuth({
-            clientId: schoolId, 
+        authStrategy: new RemoteAuth({
+            clientId: schoolId,
+            store: store,
+            backupSyncIntervalMs: 300000
         }),
         puppeteer: {
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] // Necessário para rodar no Render
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         }
     });
 
     client.on('qr', (qr) => {
-        console.log(`[${schoolId}] QR Code recebido. A pasta da sessão será criada no disco persistente após a leitura.`);
-        qrcode.toDataURL(qr, (err, url) => {
-            if (err) {
-                console.error(`[${schoolId}] Erro ao gerar QR Code:`, err);
-                return;
-            }
-            socket.emit('qr', url);
-            socket.emit('message', { text: 'QR Code recebido. Escaneie com seu celular.' });
-        });
+        // Este evento ainda pode ser acionado se não houver sessão salva
+        console.log(`[${schoolId}] QR Code recebido. Enviando para o cliente.`);
+        socket.emit('qr', qr); // O frontend já sabe como transformar isso em uma imagem
+        socket.emit('message', { text: 'QR Code recebido. Escaneie com seu celular.' });
     });
 
-    // Evento 'authenticated' não é mais necessário para salvar a sessão,
-    // a biblioteca faz isso automaticamente.
+    client.on('remote_session_saved', () => {
+        console.log(`[${schoolId}] Sessão remota salva com sucesso no Firebase!`);
+    });
 
     client.on('ready', () => {
         console.log(`[${schoolId}] Cliente do WhatsApp está pronto!`);
@@ -48,8 +68,6 @@ const initializeClient = async (schoolId, socket) => {
 
     client.on('auth_failure', (msg) => {
         console.error(`[${schoolId}] Falha na autenticação:`, msg);
-        // Em caso de falha, pode ser necessário limpar a pasta da sessão manualmente
-        // no disco persistente se o problema persistir.
         socket.emit('disconnected');
     });
 
