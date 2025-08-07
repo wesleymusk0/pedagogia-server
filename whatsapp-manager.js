@@ -21,20 +21,34 @@ class FirebaseStore {
         if (!clientId) throw new Error('O clientId (schoolId) é obrigatório.');
         this.path = `whatsapp_sessions/${clientId}`;
         this.dbRef = db.ref(this.path);
+        this.sessionData = null;
     }
+
     async save(session) {
         console.log(`[FirebaseStore] Salvando sessão para ${this.path}`);
+        this.sessionData = session;
         await this.dbRef.set(session);
     }
-    async retrieve() {
-        console.log(`[FirebaseStore] Recuperando sessão de ${this.path}`);
-        const snapshot = await this.dbRef.once('value');
-        return snapshot.val();
+
+    async extract() {
+        if (!this.sessionData) {
+            console.log(`[FirebaseStore] Nenhuma sessão local em memória. Buscando no Firebase...`);
+            const snapshot = await this.dbRef.once('value');
+            const data = snapshot.val();
+            this.sessionData = data;
+            return data;
+        } else {
+            console.log(`[FirebaseStore] Sessão carregada da memória local.`);
+            return this.sessionData;
+        }
     }
+
     async delete() {
         console.log(`[FirebaseStore] Deletando sessão de ${this.path}`);
+        this.sessionData = null;
         await this.dbRef.remove();
     }
+
     async sessionExists() {
         const snapshot = await this.dbRef.once('value');
         const exists = snapshot.exists();
