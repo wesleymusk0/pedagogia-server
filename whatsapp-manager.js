@@ -2,7 +2,7 @@ const { Client, RemoteAuth } = require('whatsapp-web.js');
 const admin = require('firebase-admin');
 const qrcode = require('qrcode');
 
-// Inicialize o Firebase Admin SDK (se ainda não estiver inicializado)
+// === Inicializa Firebase apenas uma vez ===
 if (!admin.apps.length) {
     const serviceAccount = process.env.FIREBASE_KEY_JSON
         ? JSON.parse(process.env.FIREBASE_KEY_JSON)
@@ -10,41 +10,41 @@ if (!admin.apps.length) {
 
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
-        databaseURL: `https://pedagogia-systematrix-default-rtdb.firebaseio.com/`
+        databaseURL: 'https://pedagogia-systematrix-default-rtdb.firebaseio.com/',
     });
 }
 const db = admin.database();
 
-// ===== Classe FirebaseStore =====
-class FirebaseStore {
+// === Classe de armazenamento remoto embutida ===
+class FirebaseRemoteAuthStore {
     constructor(clientId) {
         if (!clientId) throw new Error('O clientId (schoolId) é obrigatório.');
-        this.path = `whatsapp_sessions/${clientId}`;
-        this.dbRef = db.ref(this.path);
+        this.clientId = clientId;
+        this.dbRef = db.ref(`whatsapp_sessions/${clientId}`);
         this.sessionData = null;
     }
 
-    async save(session) {
-        console.log(`[FirebaseStore] Salvando sessão para ${this.path}`);
-        this.sessionData = session;
-        await this.dbRef.set(session);
+    async save(data) {
+        console.log(`[Store] Salvando sessão: ${this.clientId}`);
+        this.sessionData = data;
+        await this.dbRef.set(data);
     }
 
     async extract() {
-        if (!this.sessionData) {
-            console.log(`[FirebaseStore] Nenhuma sessão local em memória. Buscando no Firebase...`);
-            const snapshot = await this.dbRef.once('value');
-            const data = snapshot.val();
-            this.sessionData = data;
-            return data;
-        } else {
-            console.log(`[FirebaseStore] Sessão carregada da memória local.`);
+        if (this.sessionData) {
+            console.log(`[Store] Sessão em cache: ${this.clientId}`);
             return this.sessionData;
         }
+
+        console.log(`[Store] Carregando sessão do Firebase: ${this.clientId}`);
+        const snapshot = await this.dbRef.once('value');
+        const data = snapshot.val();
+        this.sessionData = data;
+        return data || null;
     }
 
     async delete() {
-        console.log(`[FirebaseStore] Deletando sessão de ${this.path}`);
+        console.log(`[Store] Deletando sessão: ${this.clientId}`);
         this.sessionData = null;
         await this.dbRef.remove();
     }
@@ -52,58 +52,56 @@ class FirebaseStore {
     async sessionExists() {
         const snapshot = await this.dbRef.once('value');
         const exists = snapshot.exists();
-        console.log(`[FirebaseStore] Verificando se sessão existe para ${this.path}: ${exists}`);
+        console.log(`[Store] Sessão existe para ${this.clientId}: ${exists}`);
         return exists;
     }
 }
 
-// Armazena cliente, socket e estado da sessão
-const clients = {}; // { schoolId: { client, socket } }
-const sessionStates = {}; // { schoolId: 'initializing' | 'ready' | 'disconnected' }
+// === Gerenciador de clientes ===
+const clients = {};
 
+/**
+ * Inicializa um cliente WhatsApp para a escola especificada
+ * @param {string} schoolId 
+ * @param {Socket} socket 
+ */
 const initializeClient = async (schoolId, socket) => {
-    console.log(`[${schoolId}] Requisição para iniciar sessão pelo socket ${socket.id}`);
+    console.log(`[${schoolId}] Iniciando cliente para socket ${socket.id}`);
 
-    // Impede reinicialização se a sessão já estiver em estado válido
-    const estadoAtual = sessionStates[schoolId];
-    if (estadoAtual === 'initializing' || estadoAtual === 'ready') {
-        console.log(`[${schoolId}] Sessão já está em estado '${estadoAtual}'. Ignorando nova inicialização.`);
-        return;
-    }
-
-    // Remove cliente anterior, se houver
+    // Se já existir, encerra cliente antigo
     if (clients[schoolId]) {
-        console.log(`[${schoolId}] Encerrando cliente anterior do socket ${clients[schoolId].socket.id}`);
-        clients[schoolId].socket.emit('session_terminated', 'Outra aba ou usuário iniciou uma nova conexão.');
+        console.log(`[${schoolId}] Sessão duplicada detectada. Encerrando anterior...`);
+        clients[schoolId].socket.emit('session_terminated', 'Uma nova conexão foi iniciada.');
         await clients[schoolId].client.destroy();
         delete clients[schoolId];
-        sessionStates[schoolId] = 'disconnected';
     }
 
-    // Marca como inicializando
-    sessionStates[schoolId] = 'initializing';
-    const store = new FirebaseStore(schoolId);
+    const store = new FirebaseRemoteAuthStore(schoolId);
 
     const client = new Client({
         authStrategy: new RemoteAuth({
             clientId: schoolId,
-            store,
-            backupSyncIntervalMs: 300000 // 5 minutos
+            store: store,
+            backupSyncIntervalMs: null, // evita arquivos .zip locais
         }),
-        puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
+        puppeteer: {
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        },
     });
 
-    // ========== EVENTOS ==========
+    let isDisconnected = false;
+
     client.on('qr', (qr) => {
-        if (sessionStates[schoolId] === 'disconnected') {
-            console.log(`[${schoolId}] QR ignorado: sessão foi marcada como desconectada.`);
+        if (isDisconnected) {
+            console.log(`[${schoolId}] QR ignorado (cliente desconectado).`);
             return;
         }
 
-        console.log(`[${schoolId}] QR Code recebido. Emitindo para o socket ${socket.id}`);
+        console.log(`[${schoolId}] QR code recebido.`);
         qrcode.toDataURL(qr, (err, url) => {
             if (err) {
-                console.error(`[${schoolId}] Erro ao gerar QR Code:`, err);
+                console.error(`[${schoolId}] Erro ao gerar QR:`, err);
                 return;
             }
             socket.emit('qr', url);
@@ -111,68 +109,70 @@ const initializeClient = async (schoolId, socket) => {
     });
 
     client.on('ready', () => {
-        sessionStates[schoolId] = 'ready';
+        console.log(`[${schoolId}] Cliente pronto.`);
         clients[schoolId] = { client, socket };
-        console.log(`[${schoolId}] Cliente pronto. Sessão ativa.`);
         socket.emit('ready');
     });
 
-    client.on('authenticated', () => {
-        console.log(`[${schoolId}] Sessão autenticada com sucesso.`);
-    });
-
     client.on('auth_failure', async (msg) => {
-        console.error(`[${schoolId}] Falha na autenticação:`, msg);
-        sessionStates[schoolId] = 'disconnected';
+        console.error(`[${schoolId}] Falha de autenticação:`, msg);
         await store.delete();
-        delete clients[schoolId];
+        isDisconnected = true;
         socket.emit('disconnected');
+        delete clients[schoolId];
     });
 
     client.on('disconnected', async (reason) => {
-        console.log(`[${schoolId}] Cliente desconectado:`, reason);
-        sessionStates[schoolId] = 'disconnected';
+        console.log(`[${schoolId}] Cliente desconectado: ${reason}`);
         await store.delete();
-        delete clients[schoolId];
+        isDisconnected = true;
         socket.emit('disconnected');
+        delete clients[schoolId];
     });
 
-    // ========== Inicialização ==========
     try {
         await client.initialize();
-        console.log(`[${schoolId}] Cliente inicializado com sucesso.`);
     } catch (err) {
         console.error(`[${schoolId}] Erro ao inicializar cliente:`, err);
-        sessionStates[schoolId] = 'disconnected';
+        isDisconnected = true;
+        socket.emit('disconnected');
+        delete clients[schoolId];
     }
 };
 
-// ========== Envio de mensagem ==========
+/**
+ * Envia mensagem pelo cliente de uma escola
+ * @param {string} schoolId 
+ * @param {string} numero 
+ * @param {string} mensagem 
+ * @returns {Object}
+ */
 const sendMessage = async (schoolId, numero, mensagem) => {
-    const session = clients[schoolId];
-    if (!session || sessionStates[schoolId] !== 'ready') {
-        return { sucesso: false, mensagem: "Sessão não está pronta." };
+    if (!clients[schoolId]) {
+        return { sucesso: false, mensagem: "Sessão não iniciada para esta escola." };
     }
 
     try {
         const chatId = `${numero.replace(/\D/g, '')}@c.us`;
-        await session.client.sendMessage(chatId, mensagem);
-        console.log(`[${schoolId}] Mensagem enviada para ${numero}`);
+        await clients[schoolId].client.sendMessage(chatId, mensagem);
         return { sucesso: true, mensagem: "Mensagem enviada." };
     } catch (error) {
-        console.error(`[${schoolId}] Erro ao enviar mensagem para ${numero}:`, error);
-        return { sucesso: false, mensagem: "Erro ao enviar mensagem." };
+        console.error(`[${schoolId}] Erro ao enviar mensagem:`, error);
+        return { sucesso: false, mensagem: "Falha ao enviar mensagem." };
     }
 };
 
-// ========== Limpeza manual ==========
+/**
+ * Limpa cliente e encerra sessão ao desconectar socket
+ * @param {string} schoolId 
+ */
 const cleanupClient = async (schoolId) => {
     if (clients[schoolId]) {
-        console.log(`[${schoolId}] Limpando cliente após desconexão.`);
+        console.log(`[${schoolId}] Encerrando sessão por desconexão de socket.`);
         await clients[schoolId].client.destroy();
         delete clients[schoolId];
+        console.log(`[${schoolId}] Sessão encerrada com sucesso.`);
     }
-    sessionStates[schoolId] = 'disconnected';
 };
 
 module.exports = {
