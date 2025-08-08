@@ -15,7 +15,7 @@ if (!admin.apps.length) {
 }
 const db = admin.database();
 
-// === Classe de armazenamento remoto embutida ===
+// === Classe de armazenamento remoto no Firebase ===
 class FirebaseRemoteAuthStore {
     constructor(clientId) {
         if (!clientId) throw new Error('O clientId (schoolId) é obrigatório.');
@@ -25,9 +25,9 @@ class FirebaseRemoteAuthStore {
     }
 
     async save(data) {
-        console.log(`[Store] Salvando sessão: ${this.clientId}`);
+        console.log(`[Store] Salvando sessão no Firebase: ${this.clientId}`);
         this.sessionData = data;
-        await this.dbRef.set(data);
+        await this.dbRef.set(data); // Salva todos os dados da sessão
     }
 
     async extract() {
@@ -44,7 +44,7 @@ class FirebaseRemoteAuthStore {
     }
 
     async delete() {
-        console.log(`[Store] Deletando sessão: ${this.clientId}`);
+        console.log(`[Store] Deletando sessão do Firebase: ${this.clientId}`);
         this.sessionData = null;
         await this.dbRef.remove();
     }
@@ -78,18 +78,25 @@ const initializeClient = async (schoolId, socket) => {
 
     const store = new FirebaseRemoteAuthStore(schoolId);
 
-    const client = new Client({
-    authStrategy: new RemoteAuth({
-        clientId: schoolId,
-        store: store,
-        backupSyncIntervalMs: 60000 // Corrigido aqui
-    }),
-    puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    },
-});
+    // Log para saber se já existe sessão
+    const hasSession = await store.sessionExists();
+    if (hasSession) {
+        console.log(`[${schoolId}] Sessão encontrada no Firebase. Tentando restaurar...`);
+    } else {
+        console.log(`[${schoolId}] Nenhuma sessão encontrada. Será necessário escanear o QR code.`);
+    }
 
+    const client = new Client({
+        authStrategy: new RemoteAuth({
+            clientId: schoolId,
+            store: store,
+            backupSyncIntervalMs: 60000 // Faz backup a cada 60 segundos
+        }),
+        puppeteer: {
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        },
+    });
 
     let isDisconnected = false;
 
@@ -110,22 +117,22 @@ const initializeClient = async (schoolId, socket) => {
     });
 
     client.on('ready', () => {
-        console.log(`[${schoolId}] Cliente pronto.`);
+        console.log(`[${schoolId}] Cliente pronto e sessão salva no Firebase.`);
         clients[schoolId] = { client, socket };
         socket.emit('ready');
     });
 
-    client.on('auth_failure', async (msg) => {
+    client.on('auth_failure', (msg) => {
         console.error(`[${schoolId}] Falha de autenticação:`, msg);
-        await store.delete();
+        // Não apagamos a sessão automaticamente para evitar perda por instabilidade
         isDisconnected = true;
         socket.emit('disconnected');
         delete clients[schoolId];
     });
 
-    client.on('disconnected', async (reason) => {
+    client.on('disconnected', (reason) => {
         console.log(`[${schoolId}] Cliente desconectado: ${reason}`);
-        await store.delete();
+        // Não apagamos a sessão automaticamente
         isDisconnected = true;
         socket.emit('disconnected');
         delete clients[schoolId];
@@ -143,10 +150,6 @@ const initializeClient = async (schoolId, socket) => {
 
 /**
  * Envia mensagem pelo cliente de uma escola
- * @param {string} schoolId 
- * @param {string} numero 
- * @param {string} mensagem 
- * @returns {Object}
  */
 const sendMessage = async (schoolId, numero, mensagem) => {
     if (!clients[schoolId]) {
@@ -164,16 +167,17 @@ const sendMessage = async (schoolId, numero, mensagem) => {
 };
 
 /**
- * Limpa cliente e encerra sessão ao desconectar socket
- * @param {string} schoolId 
+ * Limpa cliente e encerra sessão manualmente
  */
 const cleanupClient = async (schoolId) => {
     if (clients[schoolId]) {
-        console.log(`[${schoolId}] Encerrando sessão por desconexão de socket.`);
+        console.log(`[${schoolId}] Encerrando sessão manualmente.`);
         await clients[schoolId].client.destroy();
         delete clients[schoolId];
-        console.log(`[${schoolId}] Sessão encerrada com sucesso.`);
     }
+    const store = new FirebaseRemoteAuthStore(schoolId);
+    await store.delete();
+    console.log(`[${schoolId}] Sessão removida do Firebase.`);
 };
 
 module.exports = {
